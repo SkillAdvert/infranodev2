@@ -526,7 +526,7 @@ async def get_water_resources():
             continue
     
     return {"type": "FeatureCollection", "features": features}
- @app.get("/api/projects/enhanced")
+@app.get("/api/projects/enhanced")
 async def get_enhanced_geojson():
     """Get projects with enhanced proximity-based scoring"""
     projects = await query_supabase("renewable_projects?select=*&limit=100")  # Start with 100 for testing
@@ -568,5 +568,6 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
