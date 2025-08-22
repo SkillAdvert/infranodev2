@@ -119,6 +119,248 @@ async def get_geojson():
     
     return {"type": "FeatureCollection", "features": features}
 
+# Add this to your main.py file AFTER your existing functions but BEFORE the endpoints
+# This integrates the proximity scoring algorithm
+# ADDING SCORING ALGORITHM
+import json
+from math import radians, sin, cos, asin, sqrt
+from typing import Dict, List, Tuple, Optional
+
+def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calculate distance between two points on Earth in kilometers"""
+    R = 6371  # Earth radius (km)
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    lat1, lat2 = radians(lat1), radians(lat2)
+    
+    a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+    return 2 * R * asin(sqrt(a))
+
+def exponential_score(distance_km: float, d_max: float = 100, s_max: float = 50) -> float:
+    """Exponential decay scoring: closer infrastructure = exponentially better score"""
+    if distance_km >= d_max:
+        return 0
+    
+    k = 4.6 / d_max  # ln(100) ≈ 4.6, gives good decay curve
+    score = s_max * (2.718 ** (-k * distance_km))
+    return max(0, score)
+
+def point_to_line_segment_distance(px: float, py: float, x1: float, y1: float, x2: float, y2: float) -> float:
+    """Calculate shortest distance from point to line segment using haversine"""
+    A = px - x1
+    B = py - y1
+    C = x2 - x1
+    D = y2 - y1
+    
+    dot = A * C + B * D
+    len_sq = C * C + D * D
+    
+    if len_sq == 0:
+        return haversine(px, py, x1, y1)
+    
+    param = dot / len_sq
+    
+    if param < 0:
+        closest_x, closest_y = x1, y1
+    elif param > 1:
+        closest_x, closest_y = x2, y2
+    else:
+        closest_x = x1 + param * C
+        closest_y = y1 + param * D
+    
+    return haversine(px, py, closest_x, closest_y)
+
+async def calculate_proximity_scores(project_latitude: float, project_longitude: float) -> Dict:
+    """Calculate proximity scores to all infrastructure types"""
+    
+    # Fetch all infrastructure data
+    substations = await query_supabase("substations?select=*")
+    transmission_lines = await query_supabase("transmission_lines?select=*")
+    fiber_cables = await query_supabase("fiber_cables?select=*")
+    internet_exchange_points = await query_supabase("internet_exchange_points?select=*")
+    water_resources = await query_supabase("water_resources?select=*")
+    
+    proximity_scores = {
+        'substation_score': 0,
+        'transmission_score': 0,
+        'fiber_score': 0,
+        'ixp_score': 0,
+        'water_score': 0,
+        'total_proximity_bonus': 0,
+        'nearest_distances': {}
+    }
+    
+    # 1. SUBSTATIONS
+    substation_distances = []
+    for substation in substations or []:
+        if not substation.get('latitude') or not substation.get('longitude'):
+            continue
+        
+        distance = haversine(
+            project_latitude, project_longitude,
+            substation['latitude'], substation['longitude']
+        )
+        
+        if distance <= 100:  # 100km cutoff
+            substation_distances.append(distance)
+    
+    if substation_distances:
+        nearest_substation = min(substation_distances)
+        proximity_scores['substation_score'] = exponential_score(nearest_substation)
+        proximity_scores['nearest_distances']['substation_km'] = round(nearest_substation, 1)
+    
+    # 2. TRANSMISSION LINES
+    transmission_distances = []
+    for line in transmission_lines or []:
+        if not line.get('path_coordinates'):
+            continue
+        
+        try:
+            coordinates = json.loads(line['path_coordinates'])
+            min_distance_to_line = float('inf')
+            
+            for i in range(len(coordinates) - 1):
+                seg_distance = point_to_line_segment_distance(
+                    project_latitude, project_longitude,
+                    coordinates[i][1], coordinates[i][0],  # lat, lon
+                    coordinates[i+1][1], coordinates[i+1][0]
+                )
+                min_distance_to_line = min(min_distance_to_line, seg_distance)
+            
+            if min_distance_to_line <= 100:
+                transmission_distances.append(min_distance_to_line)
+        except:
+            continue
+    
+    if transmission_distances:
+        nearest_transmission = min(transmission_distances)
+        proximity_scores['transmission_score'] = exponential_score(nearest_transmission)
+        proximity_scores['nearest_distances']['transmission_km'] = round(nearest_transmission, 1)
+    
+    # 3. FIBER CABLES
+    fiber_distances = []
+    for cable in fiber_cables or []:
+        if not cable.get('route_coordinates'):
+            continue
+        
+        try:
+            coordinates = json.loads(cable['route_coordinates'])
+            min_distance_to_cable = float('inf')
+            
+            for i in range(len(coordinates) - 1):
+                seg_distance = point_to_line_segment_distance(
+                    project_latitude, project_longitude,
+                    coordinates[i][1], coordinates[i][0],
+                    coordinates[i+1][1], coordinates[i+1][0]
+                )
+                min_distance_to_cable = min(min_distance_to_cable, seg_distance)
+            
+            if min_distance_to_cable <= 100:
+                fiber_distances.append(min_distance_to_cable)
+        except:
+            continue
+    
+    if fiber_distances:
+        nearest_fiber = min(fiber_distances)
+        proximity_scores['fiber_score'] = exponential_score(nearest_fiber, s_max=20)
+        proximity_scores['nearest_distances']['fiber_km'] = round(nearest_fiber, 1)
+    
+    # 4. INTERNET EXCHANGE POINTS
+    ixp_distances = []
+    for ixp in internet_exchange_points or []:
+        if not ixp.get('latitude') or not ixp.get('longitude'):
+            continue
+        
+        distance = haversine(
+            project_latitude, project_longitude,
+            ixp['latitude'], ixp['longitude']
+        )
+        
+        if distance <= 100:
+            ixp_distances.append(distance)
+    
+    if ixp_distances:
+        nearest_ixp = min(ixp_distances)
+        proximity_scores['ixp_score'] = exponential_score(nearest_ixp, s_max=10)
+        proximity_scores['nearest_distances']['ixp_km'] = round(nearest_ixp, 1)
+    
+    # 5. WATER RESOURCES
+    water_distances = []
+    for water in water_resources or []:
+        if not water.get('coordinates'):
+            continue
+        
+        try:
+            coordinates = json.loads(water['coordinates'])
+            
+            if len(coordinates) == 2 and isinstance(coordinates[0], (int, float)):
+                # Single point (lake/reservoir)
+                distance = haversine(
+                    project_latitude, project_longitude,
+                    coordinates[1], coordinates[0]  # lat, lon
+                )
+            else:
+                # Line (river)
+                min_distance_to_water = float('inf')
+                for i in range(len(coordinates) - 1):
+                    seg_distance = point_to_line_segment_distance(
+                        project_latitude, project_longitude,
+                        coordinates[i][1], coordinates[i][0],
+                        coordinates[i+1][1], coordinates[i+1][0]
+                    )
+                    min_distance_to_water = min(min_distance_to_water, seg_distance)
+                distance = min_distance_to_water
+            
+            if distance <= 100:
+                water_distances.append(distance)
+        except:
+            continue
+    
+    if water_distances:
+        nearest_water = min(water_distances)
+        proximity_scores['water_score'] = exponential_score(nearest_water, s_max=15)
+        proximity_scores['nearest_distances']['water_km'] = round(nearest_water, 1)
+    
+    # Calculate total proximity bonus
+    proximity_scores['total_proximity_bonus'] = (
+        proximity_scores['substation_score'] +
+        proximity_scores['transmission_score'] + 
+        proximity_scores['fiber_score'] +
+        proximity_scores['ixp_score'] +
+        proximity_scores['water_score']
+    )
+    
+    return proximity_scores
+
+def calculate_enhanced_score(project: Dict, proximity_scores: Dict) -> Dict:
+    """Combine original project scoring with proximity bonus"""
+    
+    # Get original score
+    original_scoring = calculate_score(project)
+    base_score = original_scoring['investment_score']
+    
+    # Add proximity bonus
+    proximity_bonus = min(proximity_scores['total_proximity_bonus'], 95)
+    enhanced_score = min(base_score + proximity_bonus, 195)
+    
+    # Enhanced grading scale
+    if enhanced_score >= 170: grade, color = "A++", "#00DD00"
+    elif enhanced_score >= 150: grade, color = "A+", "#00FF00"  
+    elif enhanced_score >= 130: grade, color = "A", "#7FFF00"
+    elif enhanced_score >= 110: grade, color = "B+", "#FFFF00"
+    elif enhanced_score >= 90: grade, color = "B", "#FFA500"
+    elif enhanced_score >= 70: grade, color = "C+", "#FF7700"
+    elif enhanced_score >= 50: grade, color = "C", "#FF4500"
+    else: grade, color = "D", "#FF0000"
+    
+    return {
+        "base_investment_score": base_score,
+        "proximity_bonus": round(proximity_bonus, 1),
+        "enhanced_investment_score": round(enhanced_score, 1),
+        "investment_grade": grade,
+        "color_code": color,
+        "proximity_details": proximity_scores
+    }
 # Step 4: Add these new endpoints to your main.py file
 # Add them AFTER your existing project endpoints
 # This teaches your API how to serve infrastructure data
@@ -284,9 +526,47 @@ async def get_water_resources():
             continue
     
     return {"type": "FeatureCollection", "features": features}
-
+ @app.get("/api/projects/enhanced")
+async def get_enhanced_geojson():
+    """Get projects with enhanced proximity-based scoring"""
+    projects = await query_supabase("renewable_projects?select=*&limit=100")  # Start with 100 for testing
+    features = []
+    
+    for project in projects:
+        if not project.get('longitude') or not project.get('latitude'):
+            continue
+        
+        # Calculate proximity scores
+        proximity_scores = await calculate_proximity_scores(
+            project['latitude'], 
+            project['longitude']
+        )
+        
+        # Get enhanced scoring
+        enhanced_scoring = calculate_enhanced_score(project, proximity_scores)
+        
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [project['longitude'], project['latitude']]},
+            "properties": {
+                "ref_id": project['ref_id'],
+                "site_name": project['site_name'],
+                "technology_type": project['technology_type'],
+                "capacity_mw": project.get('capacity_mw'),
+                "county": project.get('county'),
+                "base_score": enhanced_scoring['base_investment_score'],
+                "proximity_bonus": enhanced_scoring['proximity_bonus'],
+                "enhanced_score": enhanced_scoring['enhanced_investment_score'],
+                "investment_grade": enhanced_scoring['investment_grade'],
+                "color_code": enhanced_scoring['color_code'],
+                "nearest_infrastructure": enhanced_scoring['proximity_details']['nearest_distances']
+            }
+        })
+    
+    return {"type": "FeatureCollection", "features": features}
 if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
