@@ -94,7 +94,7 @@ async def get_projects(
 
 @app.get("/api/projects/geojson")
 async def get_geojson():
-    projects = await query_supabase("renewable_projects?select=*&limit=200")
+    projects = await query_supabase("renewable_projects?select=*&limit=500")
     features = []
     
     for project in projects:
@@ -121,4 +121,5 @@ async def get_geojson():
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
