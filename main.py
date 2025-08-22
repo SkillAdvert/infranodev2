@@ -119,7 +119,174 @@ async def get_geojson():
     
     return {"type": "FeatureCollection", "features": features}
 
+# Step 4: Add these new endpoints to your main.py file
+# Add them AFTER your existing project endpoints
+# This teaches your API how to serve infrastructure data
+
+import json
+
+@app.get("/api/infrastructure/transmission")
+async def get_transmission_lines():
+    """Get power lines for the map"""
+    lines = await query_supabase("transmission_lines?select=*")
+    
+    features = []
+    for line in lines or []:
+        if not line.get('path_coordinates'):
+            continue
+            
+        try:
+            # Convert the coordinate text back into a list
+            coordinates = json.loads(line['path_coordinates'])
+            features.append({
+                "type": "Feature",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": coordinates
+                },
+                "properties": {
+                    "name": line['line_name'],
+                    "voltage_kv": line['voltage_kv'],
+                    "operator": line['operator'],
+                    "type": "transmission_line"
+                }
+            })
+        except:
+            continue  # Skip if coordinates are broken
+    
+    return {"type": "FeatureCollection", "features": features}
+
+@app.get("/api/infrastructure/substations")
+async def get_substations():
+    """Get electrical substations for the map"""
+    stations = await query_supabase("substations?select=*")
+    
+    features = []
+    for station in stations or []:
+        if not station.get('longitude') or not station.get('latitude'):
+            continue
+            
+        features.append({
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [station['longitude'], station['latitude']]
+            },
+            "properties": {
+                "name": station['substation_name'],
+                "operator": station['operator'],
+                "voltage_kv": station['primary_voltage_kv'],
+                "capacity_mva": station['capacity_mva'],
+                "type": "substation"
+            }
+        })
+    
+    return {"type": "FeatureCollection", "features": features}
+
+@app.get("/api/infrastructure/fiber")
+async def get_fiber_cables():
+    """Get internet cables for the map"""
+    cables = await query_supabase("fiber_cables?select=*")
+    
+    features = []
+    for cable in cables or []:
+        if not cable.get('route_coordinates'):
+            continue
+            
+        try:
+            coordinates = json.loads(cable['route_coordinates'])
+            features.append({
+                "type": "Feature",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": coordinates
+                },
+                "properties": {
+                    "name": cable['cable_name'],
+                    "operator": cable['operator'],
+                    "cable_type": cable['cable_type'],
+                    "type": "fiber_cable"
+                }
+            })
+        except:
+            continue
+    
+    return {"type": "FeatureCollection", "features": features}
+
+@app.get("/api/infrastructure/ixp")
+async def get_internet_exchanges():
+    """Get internet exchange points for the map"""
+    ixps = await query_supabase("internet_exchange_points?select=*")
+    
+    features = []
+    for ixp in ixps or []:
+        if not ixp.get('longitude') or not ixp.get('latitude'):
+            continue
+            
+        features.append({
+            "type": "Feature",
+            "geometry": {
+                "type": "Point",
+                "coordinates": [ixp['longitude'], ixp['latitude']]
+            },
+            "properties": {
+                "name": ixp['ixp_name'],
+                "operator": ixp['operator'],
+                "city": ixp['city'],
+                "networks": ixp['connected_networks'],
+                "capacity_gbps": ixp['capacity_gbps'],
+                "type": "ixp"
+            }
+        })
+    
+    return {"type": "FeatureCollection", "features": features}
+
+@app.get("/api/infrastructure/water")
+async def get_water_resources():
+    """Get water sources for the map"""
+    water_sources = await query_supabase("water_resources?select=*")
+    
+    features = []
+    for water in water_sources or []:
+        if not water.get('coordinates'):
+            continue
+            
+        try:
+            coordinates = json.loads(water['coordinates'])
+            
+            # Check if it's a single point or a line/area
+            if len(coordinates) == 2 and isinstance(coordinates[0], (int, float)):
+                # Single point (like a lake)
+                geometry = {
+                    "type": "Point",
+                    "coordinates": coordinates
+                }
+            else:
+                # Multiple points (like a river)
+                geometry = {
+                    "type": "LineString",
+                    "coordinates": coordinates
+                }
+            
+            features.append({
+                "type": "Feature",
+                "geometry": geometry,
+                "properties": {
+                    "name": water['resource_name'],
+                    "resource_type": water['resource_type'],
+                    "water_quality": water['water_quality'],
+                    "flow_rate": water.get('flow_rate_liters_sec'),
+                    "capacity": water.get('capacity_million_liters'),
+                    "type": "water_resource"
+                }
+            })
+        except:
+            continue
+    
+    return {"type": "FeatureCollection", "features": features}
+
 if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
