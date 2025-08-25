@@ -119,10 +119,9 @@ async def get_geojson():
     
     return {"type": "FeatureCollection", "features": features}
 
-# Add this to your main.py file AFTER your existing functions but BEFORE the endpoints
-# This integrates the proximity scoring algorithm
-# ADDING SCORING ALGORITHM
+# SCORING ALGORITHM - OPTIMIZED VERSION
 import json
+import time
 from math import radians, sin, cos, asin, sqrt
 from typing import Dict, List, Tuple, Optional
 
@@ -170,167 +169,184 @@ def point_to_line_segment_distance(px: float, py: float, x1: float, y1: float, x
     
     return haversine(px, py, closest_x, closest_y)
 
-async def calculate_proximity_scores(project_latitude: float, project_longitude: float) -> Dict:
-    """Calculate proximity scores to all infrastructure types"""
+# OPTIMIZED: Load infrastructure once, score multiple projects
+async def calculate_proximity_scores_batch(projects: List[Dict]) -> List[Dict]:
+    """OPTIMIZED: Calculate proximity scores for multiple projects efficiently"""
     
-    # Fetch all infrastructure data
-    substations = await query_supabase("substations?select=*")
-    transmission_lines = await query_supabase("transmission_lines?select=*")
-    fiber_cables = await query_supabase("fiber_cables?select=*")
-    internet_exchange_points = await query_supabase("internet_exchange_points?select=*")
-    water_resources = await query_supabase("water_resources?select=*")
+    print("🔄 Loading all infrastructure data once...")
+    load_start = time.time()
     
-    proximity_scores = {
-        'substation_score': 0,
-        'transmission_score': 0,
-        'fiber_score': 0,
-        'ixp_score': 0,
-        'water_score': 0,
-        'total_proximity_bonus': 0,
-        'nearest_distances': {}
-    }
+    # Load ALL infrastructure data once (instead of per project)
+    try:
+        substations = await query_supabase("substations?select=*")
+        transmission_lines = await query_supabase("transmission_lines?select=*")
+        fiber_cables = await query_supabase("fiber_cables?select=*")
+        internet_exchange_points = await query_supabase("internet_exchange_points?select=*")
+        water_resources = await query_supabase("water_resources?select=*")
+        
+        load_time = time.time() - load_start
+        print(f"✅ Infrastructure loaded in {load_time:.2f}s:")
+        print(f"   - Substations: {len(substations or [])}")
+        print(f"   - Transmission: {len(transmission_lines or [])}")
+        print(f"   - Fiber: {len(fiber_cables or [])}")
+        print(f"   - IXPs: {len(internet_exchange_points or [])}")
+        print(f"   - Water: {len(water_resources or [])}")
+        
+    except Exception as e:
+        print(f"❌ Error loading infrastructure: {e}")
+        return []
     
-    # 1. SUBSTATIONS
-    substation_distances = []
-    for substation in substations or []:
-        if not substation.get('latitude') or not substation.get('longitude'):
+    # Now process each project against the cached data
+    results = []
+    for i, project in enumerate(projects):
+        if not project.get('longitude') or not project.get('latitude'):
             continue
-        
-        distance = haversine(
-            project_latitude, project_longitude,
-            substation['latitude'], substation['longitude']
-        )
-        
-        if distance <= 100:  # 100km cutoff
-            substation_distances.append(distance)
-    
-    if substation_distances:
-        nearest_substation = min(substation_distances)
-        proximity_scores['substation_score'] = exponential_score(nearest_substation)
-        proximity_scores['nearest_distances']['substation_km'] = round(nearest_substation, 1)
-    
-    # 2. TRANSMISSION LINES
-    transmission_distances = []
-    for line in transmission_lines or []:
-        if not line.get('path_coordinates'):
-            continue
-        
-        try:
-            coordinates = json.loads(line['path_coordinates'])
-            min_distance_to_line = float('inf')
             
-            for i in range(len(coordinates) - 1):
-                seg_distance = point_to_line_segment_distance(
-                    project_latitude, project_longitude,
-                    coordinates[i][1], coordinates[i][0],  # lat, lon
-                    coordinates[i+1][1], coordinates[i+1][0]
-                )
-                min_distance_to_line = min(min_distance_to_line, seg_distance)
-            
-            if min_distance_to_line <= 100:
-                transmission_distances.append(min_distance_to_line)
-        except:
-            continue
-    
-    if transmission_distances:
-        nearest_transmission = min(transmission_distances)
-        proximity_scores['transmission_score'] = exponential_score(nearest_transmission)
-        proximity_scores['nearest_distances']['transmission_km'] = round(nearest_transmission, 1)
-    
-    # 3. FIBER CABLES
-    fiber_distances = []
-    for cable in fiber_cables or []:
-        if not cable.get('route_coordinates'):
-            continue
+        project_lat = project['latitude']
+        project_lng = project['longitude']
         
-        try:
-            coordinates = json.loads(cable['route_coordinates'])
-            min_distance_to_cable = float('inf')
-            
-            for i in range(len(coordinates) - 1):
-                seg_distance = point_to_line_segment_distance(
-                    project_latitude, project_longitude,
-                    coordinates[i][1], coordinates[i][0],
-                    coordinates[i+1][1], coordinates[i+1][0]
-                )
-                min_distance_to_cable = min(min_distance_to_cable, seg_distance)
-            
-            if min_distance_to_cable <= 100:
-                fiber_distances.append(min_distance_to_cable)
-        except:
-            continue
-    
-    if fiber_distances:
-        nearest_fiber = min(fiber_distances)
-        proximity_scores['fiber_score'] = exponential_score(nearest_fiber, s_max=20)
-        proximity_scores['nearest_distances']['fiber_km'] = round(nearest_fiber, 1)
-    
-    # 4. INTERNET EXCHANGE POINTS
-    ixp_distances = []
-    for ixp in internet_exchange_points or []:
-        if not ixp.get('latitude') or not ixp.get('longitude'):
-            continue
+        proximity_scores = {
+            'substation_score': 0,
+            'transmission_score': 0,
+            'fiber_score': 0,
+            'ixp_score': 0,
+            'water_score': 0,
+            'total_proximity_bonus': 0,
+            'nearest_distances': {}
+        }
         
-        distance = haversine(
-            project_latitude, project_longitude,
-            ixp['latitude'], ixp['longitude']
-        )
-        
-        if distance <= 100:
-            ixp_distances.append(distance)
-    
-    if ixp_distances:
-        nearest_ixp = min(ixp_distances)
-        proximity_scores['ixp_score'] = exponential_score(nearest_ixp, s_max=10)
-        proximity_scores['nearest_distances']['ixp_km'] = round(nearest_ixp, 1)
-    
-    # 5. WATER RESOURCES
-    water_distances = []
-    for water in water_resources or []:
-        if not water.get('coordinates'):
-            continue
-        
-        try:
-            coordinates = json.loads(water['coordinates'])
+        # 1. SUBSTATIONS (using cached data)
+        substation_distances = []
+        for substation in substations or []:
+            if not substation.get('latitude') or not substation.get('longitude'):
+                continue
             
-            if len(coordinates) == 2 and isinstance(coordinates[0], (int, float)):
-                # Single point (lake/reservoir)
-                distance = haversine(
-                    project_latitude, project_longitude,
-                    coordinates[1], coordinates[0]  # lat, lon
-                )
-            else:
-                # Line (river)
-                min_distance_to_water = float('inf')
-                for i in range(len(coordinates) - 1):
+            distance = haversine(project_lat, project_lng, substation['latitude'], substation['longitude'])
+            if distance <= 100:  # 100km cutoff
+                substation_distances.append(distance)
+        
+        if substation_distances:
+            nearest_substation = min(substation_distances)
+            proximity_scores['substation_score'] = exponential_score(nearest_substation)
+            proximity_scores['nearest_distances']['substation_km'] = round(nearest_substation, 1)
+        
+        # 2. TRANSMISSION LINES
+        transmission_distances = []
+        for line in transmission_lines or []:
+            if not line.get('path_coordinates'):
+                continue
+            
+            try:
+                coordinates = json.loads(line['path_coordinates'])
+                min_distance_to_line = float('inf')
+                
+                for j in range(len(coordinates) - 1):
                     seg_distance = point_to_line_segment_distance(
-                        project_latitude, project_longitude,
-                        coordinates[i][1], coordinates[i][0],
-                        coordinates[i+1][1], coordinates[i+1][0]
+                        project_lat, project_lng,
+                        coordinates[j][1], coordinates[j][0],  # lat, lon
+                        coordinates[j+1][1], coordinates[j+1][0]
                     )
-                    min_distance_to_water = min(min_distance_to_water, seg_distance)
-                distance = min_distance_to_water
+                    min_distance_to_line = min(min_distance_to_line, seg_distance)
+                
+                if min_distance_to_line <= 100:
+                    transmission_distances.append(min_distance_to_line)
+            except:
+                continue
+        
+        if transmission_distances:
+            nearest_transmission = min(transmission_distances)
+            proximity_scores['transmission_score'] = exponential_score(nearest_transmission)
+            proximity_scores['nearest_distances']['transmission_km'] = round(nearest_transmission, 1)
+        
+        # 3. FIBER CABLES
+        fiber_distances = []
+        for cable in fiber_cables or []:
+            if not cable.get('route_coordinates'):
+                continue
             
+            try:
+                coordinates = json.loads(cable['route_coordinates'])
+                min_distance_to_cable = float('inf')
+                
+                for j in range(len(coordinates) - 1):
+                    seg_distance = point_to_line_segment_distance(
+                        project_lat, project_lng,
+                        coordinates[j][1], coordinates[j][0],
+                        coordinates[j+1][1], coordinates[j+1][0]
+                    )
+                    min_distance_to_cable = min(min_distance_to_cable, seg_distance)
+                
+                if min_distance_to_cable <= 100:
+                    fiber_distances.append(min_distance_to_cable)
+            except:
+                continue
+        
+        if fiber_distances:
+            nearest_fiber = min(fiber_distances)
+            proximity_scores['fiber_score'] = exponential_score(nearest_fiber, s_max=20)
+            proximity_scores['nearest_distances']['fiber_km'] = round(nearest_fiber, 1)
+        
+        # 4. INTERNET EXCHANGE POINTS
+        ixp_distances = []
+        for ixp in internet_exchange_points or []:
+            if not ixp.get('latitude') or not ixp.get('longitude'):
+                continue
+            
+            distance = haversine(project_lat, project_lng, ixp['latitude'], ixp['longitude'])
             if distance <= 100:
-                water_distances.append(distance)
-        except:
-            continue
+                ixp_distances.append(distance)
+        
+        if ixp_distances:
+            nearest_ixp = min(ixp_distances)
+            proximity_scores['ixp_score'] = exponential_score(nearest_ixp, s_max=10)
+            proximity_scores['nearest_distances']['ixp_km'] = round(nearest_ixp, 1)
+        
+        # 5. WATER RESOURCES
+        water_distances = []
+        for water in water_resources or []:
+            if not water.get('coordinates'):
+                continue
+            
+            try:
+                coordinates = json.loads(water['coordinates'])
+                
+                if len(coordinates) == 2 and isinstance(coordinates[0], (int, float)):
+                    # Single point (lake/reservoir)
+                    distance = haversine(project_lat, project_lng, coordinates[1], coordinates[0])
+                else:
+                    # Line (river)
+                    min_distance_to_water = float('inf')
+                    for j in range(len(coordinates) - 1):
+                        seg_distance = point_to_line_segment_distance(
+                            project_lat, project_lng,
+                            coordinates[j][1], coordinates[j][0],
+                            coordinates[j+1][1], coordinates[j+1][0]
+                        )
+                        min_distance_to_water = min(min_distance_to_water, seg_distance)
+                    distance = min_distance_to_water
+                
+                if distance <= 100:
+                    water_distances.append(distance)
+            except:
+                continue
+        
+        if water_distances:
+            nearest_water = min(water_distances)
+            proximity_scores['water_score'] = exponential_score(nearest_water, s_max=15)
+            proximity_scores['nearest_distances']['water_km'] = round(nearest_water, 1)
+        
+        # Calculate total proximity bonus
+        proximity_scores['total_proximity_bonus'] = (
+            proximity_scores['substation_score'] +
+            proximity_scores['transmission_score'] + 
+            proximity_scores['fiber_score'] +
+            proximity_scores['ixp_score'] +
+            proximity_scores['water_score']
+        )
+        
+        results.append(proximity_scores)
     
-    if water_distances:
-        nearest_water = min(water_distances)
-        proximity_scores['water_score'] = exponential_score(nearest_water, s_max=15)
-        proximity_scores['nearest_distances']['water_km'] = round(nearest_water, 1)
-    
-    # Calculate total proximity bonus
-    proximity_scores['total_proximity_bonus'] = (
-        proximity_scores['substation_score'] +
-        proximity_scores['transmission_score'] + 
-        proximity_scores['fiber_score'] +
-        proximity_scores['ixp_score'] +
-        proximity_scores['water_score']
-    )
-    
-    return proximity_scores
+    return results
 
 def calculate_enhanced_score(project: Dict, proximity_scores: Dict) -> Dict:
     """Combine original project scoring with proximity bonus"""
@@ -362,10 +378,7 @@ def calculate_enhanced_score(project: Dict, proximity_scores: Dict) -> Dict:
         "proximity_details": proximity_scores
     }
 
-# Step 4: Add these new endpoints to your main.py file
-# Add them AFTER your existing project endpoints
-# This teaches your API how to serve infrastructure data
-
+# Infrastructure endpoints (unchanged)
 @app.get("/api/infrastructure/transmission")
 async def get_transmission_lines():
     """Get power lines for the map"""
@@ -377,7 +390,6 @@ async def get_transmission_lines():
             continue
             
         try:
-            # Convert the coordinate text back into a list
             coordinates = json.loads(line['path_coordinates'])
             features.append({
                 "type": "Feature",
@@ -393,7 +405,7 @@ async def get_transmission_lines():
                 }
             })
         except:
-            continue  # Skip if coordinates are broken
+            continue
     
     return {"type": "FeatureCollection", "features": features}
 
@@ -495,15 +507,12 @@ async def get_water_resources():
         try:
             coordinates = json.loads(water['coordinates'])
             
-            # Check if it's a single point or a line/area
             if len(coordinates) == 2 and isinstance(coordinates[0], (int, float)):
-                # Single point (like a lake)
                 geometry = {
                     "type": "Point",
                     "coordinates": coordinates
                 }
             else:
-                # Multiple points (like a river)
                 geometry = {
                     "type": "LineString",
                     "coordinates": coordinates
@@ -526,54 +535,13 @@ async def get_water_resources():
     
     return {"type": "FeatureCollection", "features": features}
 
-# COMMENTED OUT ORIGINAL ENHANCED ENDPOINT (HAD PERFORMANCE ISSUES)
-# @app.get("/api/projects/enhanced")
-# async def get_enhanced_geojson():
-#     """Get projects with enhanced proximity-based scoring"""
-#     projects = await query_supabase("renewable_projects?select=*&limit=100")  # Start with 100 for testing
-#     features = []
-#     
-#     for project in projects:
-#         if not project.get('longitude') or not project.get('latitude'):
-#             continue
-#         
-#         # Calculate proximity scores
-#         proximity_scores = await calculate_proximity_scores(
-#             project['latitude'], 
-#             project['longitude']
-#         )
-#         
-#         # Get enhanced scoring
-#         enhanced_scoring = calculate_enhanced_score(project, proximity_scores)
-#         
-#         features.append({
-#             "type": "Feature",
-#             "geometry": {"type": "Point", "coordinates": [project['longitude'], project['latitude']]},
-#             "properties": {
-#                 "ref_id": project['ref_id'],
-#                 "site_name": project['site_name'],
-#                 "technology_type": project['technology_type'],
-#                 "capacity_mw": project.get('capacity_mw'),
-#                 "county": project.get('county'),
-#                 "base_score": enhanced_scoring['base_investment_score'],
-#                 "proximity_bonus": enhanced_scoring['proximity_bonus'],
-#                 "enhanced_score": enhanced_scoring['enhanced_investment_score'],
-#                 "investment_grade": enhanced_scoring['investment_grade'],
-#                 "color_code": enhanced_scoring['color_code'],
-#                 "nearest_infrastructure": enhanced_scoring['proximity_details']['nearest_distances']
-#             }
-#         })
-#     
-#     return {"type": "FeatureCollection", "features": features}
-
-# NEW OPTIMIZED ENHANCED ENDPOINT
+# OPTIMIZED ENHANCED ENDPOINT - BATCH VERSION
 @app.get("/api/projects/enhanced")
-async def get_enhanced_geojson(limit: int = Query(3, description="Number of projects to process")):
-    """OPTIMIZED: Get projects with enhanced proximity-based scoring"""
-    import time
+async def get_enhanced_geojson(limit: int = Query(50, description="Number of projects to process")):
+    """OPTIMIZED BATCH VERSION: Get projects with enhanced proximity-based scoring"""
     start_time = time.time()
     
-    print(f"🚀 ENHANCED ENDPOINT CALLED - Processing {limit} projects...")
+    print(f"🚀 ENHANCED ENDPOINT CALLED (BATCH VERSION) - Processing {limit} projects...")
     
     try:
         projects = await query_supabase(f"renewable_projects?select=*&limit={limit}")
@@ -582,23 +550,52 @@ async def get_enhanced_geojson(limit: int = Query(3, description="Number of proj
         print(f"❌ Database error: {e}")
         return {"error": "Database connection failed", "type": "FeatureCollection", "features": []}
     
-    features = []
+    # Filter projects with valid coordinates
+    valid_projects = []
+    for project in projects:
+        if project.get('longitude') and project.get('latitude'):
+            valid_projects.append(project)
     
-    for i, project in enumerate(projects):
-        if not project.get('longitude') or not project.get('latitude'):
-            print(f"⚠️ Skipping project {i+1}: missing coordinates")
-            continue
+    print(f"📍 {len(valid_projects)} projects have valid coordinates")
+    
+    if not valid_projects:
+        return {"type": "FeatureCollection", "features": [], "metadata": {"error": "No projects with valid coordinates"}}
+    
+    try:
+        # BATCH PROCESSING: Calculate all proximity scores at once
+        print("🔄 Starting batch proximity calculation...")
+        batch_start = time.time()
         
-        print(f"🔄 Processing project {i+1}: {project.get('site_name', 'Unknown')}")
+        all_proximity_scores = await calculate_proximity_scores_batch(valid_projects)
         
+        batch_time = time.time() - batch_start
+        print(f"✅ Batch proximity calculation completed in {batch_time:.2f}s")
+        
+    except Exception as e:
+        print(f"❌ Error in batch proximity calculation: {e}")
+        # Fallback to basic scoring
+        all_proximity_scores = []
+        for _ in valid_projects:
+            all_proximity_scores.append({
+                'substation_score': 0, 'transmission_score': 0, 'fiber_score': 0,
+                'ixp_score': 0, 'water_score': 0, 'total_proximity_bonus': 0,
+                'nearest_distances': {}
+            })
+    
+    # Build features with enhanced scoring
+    features = []
+    for i, project in enumerate(valid_projects):
         try:
-            # Calculate proximity scores
-            proximity_scores = await calculate_proximity_scores(
-                project['latitude'], 
-                project['longitude']
-            )
+            if i < len(all_proximity_scores):
+                proximity_scores = all_proximity_scores[i]
+            else:
+                # Fallback scoring
+                proximity_scores = {
+                    'substation_score': 0, 'transmission_score': 0, 'fiber_score': 0,
+                    'ixp_score': 0, 'water_score': 0, 'total_proximity_bonus': 0,
+                    'nearest_distances': {}
+                }
             
-            # Get enhanced scoring
             enhanced_scoring = calculate_enhanced_score(project, proximity_scores)
             
             features.append({
@@ -618,8 +615,6 @@ async def get_enhanced_geojson(limit: int = Query(3, description="Number of proj
                     "nearest_infrastructure": enhanced_scoring['proximity_details']['nearest_distances']
                 }
             })
-            
-            print(f"✅ Project {i+1} scored: {enhanced_scoring['enhanced_investment_score']}/195 (Grade: {enhanced_scoring['investment_grade']})")
             
         except Exception as e:
             print(f"❌ Error processing project {i+1}: {e}")
@@ -644,7 +639,7 @@ async def get_enhanced_geojson(limit: int = Query(3, description="Number of proj
             })
     
     processing_time = time.time() - start_time
-    print(f"🎯 ENHANCED ENDPOINT COMPLETE: {len(features)} features in {processing_time:.2f}s")
+    print(f"🎯 BATCH ENHANCED ENDPOINT COMPLETE: {len(features)} features in {processing_time:.2f}s")
     
     return {
         "type": "FeatureCollection", 
@@ -652,8 +647,9 @@ async def get_enhanced_geojson(limit: int = Query(3, description="Number of proj
         "metadata": {
             "processing_time_seconds": round(processing_time, 2),
             "projects_processed": len(features),
-            "algorithm_status": "Enhanced proximity scoring active",
-            "performance_note": f"Limited to {limit} projects for optimal performance"
+            "algorithm_status": "OPTIMIZED: Batch proximity scoring",
+            "performance_improvement": f"Expected 10-50x faster than individual processing",
+            "batch_optimization": "Infrastructure loaded once, not per project"
         }
     }
 
