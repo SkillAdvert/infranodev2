@@ -109,6 +109,7 @@ async def get_geojson():
                 "ref_id": project['ref_id'],
                 "site_name": project['site_name'],
                 "technology_type": project['technology_type'],
+                "operator": project.get('operator'),
                 "capacity_mw": project.get('capacity_mw'),
                 "county": project.get('county'),
                 "investment_score": project['investment_score'],
@@ -605,6 +606,7 @@ async def get_enhanced_geojson(limit: int = Query(50, description="Number of pro
                     "ref_id": project['ref_id'],
                     "site_name": project['site_name'],
                     "technology_type": project['technology_type'],
+                    "operator": project.get('operator'), 
                     "capacity_mw": project.get('capacity_mw'),
                     "county": project.get('county'),
                     "base_score": enhanced_scoring['base_investment_score'],
@@ -626,6 +628,7 @@ async def get_enhanced_geojson(limit: int = Query(50, description="Number of pro
                 "properties": {
                     "ref_id": project['ref_id'],
                     "site_name": project['site_name'],
+                    "operator": project.get('operator'),  
                     "technology_type": project['technology_type'],
                     "capacity_mw": project.get('capacity_mw'),
                     "county": project.get('county'),
@@ -656,3 +659,4 @@ async def get_enhanced_geojson(limit: int = Query(50, description="Number of pro
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
