@@ -379,7 +379,7 @@ def calculate_enhanced_score(project: Dict, proximity_scores: Dict) -> Dict:
         "proximity_details": proximity_scores
     }
 
-# Infrastructure endpoints (unchanged)
+# Infrastructure endpoints
 @app.get("/api/infrastructure/transmission")
 async def get_transmission_lines():
     """Get power lines for the map"""
@@ -434,6 +434,41 @@ async def get_substations():
                 "type": "substation"
             }
         })
+    
+    return {"type": "FeatureCollection", "features": features}
+
+@app.get("/api/infrastructure/gsp")
+async def get_gsp_boundaries():
+    """Get GSP boundary polygons for the map"""
+    boundaries = await query_supabase("electrical_grid?type=eq.gsp_boundary&select=*")
+    
+    features = []
+    for boundary in boundaries or []:
+        if not boundary.get('geometry'):
+            continue
+            
+        try:
+            # Handle different geometry formats
+            geom = boundary['geometry']
+            
+            # If geometry is a string, parse it
+            if isinstance(geom, str):
+                geom = json.loads(geom)
+            
+            # If it's PostGIS format, you may need to convert
+            # For now, assume it's already in GeoJSON format
+            features.append({
+                "type": "Feature",
+                "geometry": geom,
+                "properties": {
+                    "name": boundary['name'],
+                    "operator": boundary.get('operator', 'NESO'),
+                    "type": "gsp_boundary"
+                }
+            })
+        except Exception as e:
+            print(f"Error processing GSP boundary: {e}")
+            continue
     
     return {"type": "FeatureCollection", "features": features}
 
@@ -659,4 +694,3 @@ async def get_enhanced_geojson(limit: int = Query(50, description="Number of pro
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
-
