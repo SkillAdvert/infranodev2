@@ -1,0 +1,159 @@
+import requests
+import json
+import time
+import os
+from typing import List, Dict
+from dotenv import load_dotenv
+
+load_dotenv()
+
+def fetch_uk_major_operator_fiber() -> List[Dict]:
+   """Fetch fiber infrastructure from major UK operators only"""
+   
+   overpass_url = "http://overpass-api.de/api/interpreter"
+   
+   # Query focused on major UK telecom operators
+   query = """
+   [out:json][timeout:180];
+   (
+     way["telecom"]["operator"~"BT|Openreach|Virgin Media|Sky|TalkTalk|Vodafone|EE|O2|Three"](49.5,-8.0,61.0,2.0);
+     way["communication"]["operator"~"BT|Openreach|Virgin Media|Sky|TalkTalk|Vodafone|EE|O2|Three"](49.5,-8.0,61.0,2.0);
+     way["man_made"="cable"]["operator"~"BT|Openreach|Virgin Media|Sky|TalkTalk|Vodafone|EE|O2|Three"](49.5,-8.0,61.0,2.0);
+     relation["telecom"]["operator"~"BT|Openreach|Virgin Media|Sky|TalkTalk|Vodafone|EE|O2|Three"](49.5,-8.0,61.0,2.0);
+   );
+   out geom;
+   """
+   
+   print("Fetching major operator fiber infrastructure from OpenStreetMap...")
+   print("Target operators: BT, Openreach, Virgin Media, Sky, TalkTalk, Vodafone, EE, O2, Three")
+   
+   try:
+       response = requests.post(overpass_url, data=query, timeout=200)
+       response.raise_for_status()
+       data = response.json()
+       
+       print(f"Found {len(data['elements'])} major operator infrastructure segments")
+       return data['elements']
+       
+   except requests.exceptions.Timeout:
+       print("Request timed out. Major operator query may still be too large.")
+       return []
+   except requests.exceptions.RequestException as e:
+       print(f"Error fetching data: {e}")
+       return []
+
+def process_fiber_data(raw_data: List[Dict]) -> List[Dict]:
+   """Convert OSM data to database format"""
+   processed_cables = []
+   
+   for element in raw_data:
+       if element['type'] not in ['way', 'relation'] or 'geometry' not in element:
+           continue
+           
+       # Handle both ways and relations
+       if element['type'] == 'way':
+           coordinates = [[node['lon'], node['lat']] for node in element['geometry']]
+       else:  # relation
+           coordinates = []
+           for member in element.get('members', []):
+               if member.get('geometry'):
+                   coordinates.extend([[node['lon'], node['lat']] for node in member['geometry']])
+       
+       if not coordinates:
+           continue
+           
+       tags = element.get('tags', {})
+       operator = tags.get('operator', tags.get('owner', 'Unknown'))
+       
+       # Determine cable type based on tags
+       cable_type = 'fiber_backbone'
+       if any(tag in str(tags).lower() for tag in ['fibre', 'fiber']):
+           cable_type = 'fiber_optic'
+       elif 'telecom' in tags:
+           cable_type = 'telecommunications'
+       
+       cable_entry = {
+           'cable_name': tags.get('name', f"{operator} Network {element['id']}"),
+           'operator': operator,
+           'cable_type': cable_type,
+           'route_coordinates': json.dumps(coordinates),
+           'capacity_gbps': None
+       }
+       
+       processed_cables.append(cable_entry)
+   
+   return processed_cables
+
+def upload_to_supabase(cables_data: List[Dict]):
+   """Upload processed fiber data to Supabase"""
+   
+   SUPABASE_URL = os.getenv("SUPABASE_URL")
+   SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
+   
+   if not SUPABASE_URL or not SUPABASE_KEY:
+       print("Missing Supabase credentials")
+       return
+   
+   headers = {
+       "apikey": SUPABASE_KEY,
+       "Authorization": f"Bearer {SUPABASE_KEY}",
+       "Content-Type": "application/json"
+   }
+   
+   delete_url = f"{SUPABASE_URL}/rest/v1/fiber_cables"
+   delete_response = requests.delete(delete_url, headers=headers)
+   print(f"Cleared existing data: {delete_response.status_code}")
+   
+   if not cables_data:
+       print("No major operator data to upload")
+       return
+   
+   # Show operator breakdown
+   operators = {}
+   for cable in cables_data:
+       op = cable['operator']
+       operators[op] = operators.get(op, 0) + 1
+   
+   print("Operator breakdown:")
+   for op, count in sorted(operators.items()):
+       print(f"  {op}: {count} segments")
+   
+   batch_size = 50
+   total_uploaded = 0
+   
+   for i in range(0, len(cables_data), batch_size):
+       batch = cables_data[i:i + batch_size]
+       
+       insert_url = f"{SUPABASE_URL}/rest/v1/fiber_cables"
+       response = requests.post(insert_url, json=batch, headers=headers)
+       
+       if response.status_code == 201:
+           total_uploaded += len(batch)
+           print(f"Uploaded batch {i//batch_size + 1}: {len(batch)} cables (Total: {total_uploaded})")
+       else:
+           print(f"Error uploading batch: {response.status_code} - {response.text}")
+           break
+       
+       time.sleep(1)
+   
+   print(f"Upload complete: {total_uploaded} major operator cables uploaded")
+
+def main():
+   print("Starting UK major operator fiber data collection...")
+   
+   raw_data = fetch_uk_major_operator_fiber()
+   
+   if not raw_data:
+       print("No major operator data retrieved - may indicate sparse tagging in OSM")
+       return
+   
+   processed_data = process_fiber_data(raw_data)
+   print(f"Processed {len(processed_data)} major operator fiber cables")
+   
+   if processed_data:
+       upload_to_supabase(processed_data)
+   else:
+       print("No valid cable data to upload")
+
+if __name__ == "__main__":
+   main()
