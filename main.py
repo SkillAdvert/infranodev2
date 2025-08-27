@@ -3,10 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, Dict, List
 import httpx
 import os
-import json
-import time
-from math import radians, sin, cos, asin, sqrt
 from dotenv import load_dotenv
+from pydantic import BaseModel
 
 load_dotenv()
 
@@ -19,6 +17,16 @@ SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
 # Debug startup
 print(f"✅ SUPABASE_URL: {SUPABASE_URL}")
 print(f"✅ SUPABASE_KEY exists: {bool(SUPABASE_KEY)}")
+
+# NEW: User site data model
+class UserSite(BaseModel):
+    site_name: str
+    technology_type: str
+    capacity_mw: float
+    latitude: float
+    longitude: float
+    commissioning_year: int
+    is_btm: bool
 
 async def query_supabase(endpoint: str):
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
@@ -124,6 +132,11 @@ async def get_geojson():
     return {"type": "FeatureCollection", "features": features}
 
 # SCORING ALGORITHM - OPTIMIZED VERSION
+import json
+import time
+from math import radians, sin, cos, asin, sqrt
+from typing import Dict, List, Tuple, Optional
+
 def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Calculate distance between two points on Earth in kilometers"""
     R = 6371  # Earth radius (km)
@@ -377,80 +390,123 @@ def calculate_enhanced_score(project: Dict, proximity_scores: Dict) -> Dict:
         "proximity_details": proximity_scores
     }
 
+# NEW: User site scoring endpoint
+@app.post("/api/user-sites/score")
+async def score_user_sites(sites: List[UserSite]):
+    """Score user-uploaded renewable energy sites"""
+    
+    if not sites:
+        raise HTTPException(400, "No sites provided")
+    
+    # Validate sites
+    for i, site in enumerate(sites):
+        # Validate coordinates (UK bounds)
+        if not (49.8 <= site.latitude <= 60.9) or not (-10.8 <= site.longitude <= 2.0):
+            raise HTTPException(400, f"Site {i+1}: Coordinates outside UK bounds")
+        
+        # Validate capacity
+        if not (5 <= site.capacity_mw <= 500):
+            raise HTTPException(400, f"Site {i+1}: Capacity must be between 5-500 MW")
+        
+        # Validate commissioning year
+        if not (2025 <= site.commissioning_year <= 2035):
+            raise HTTPException(400, f"Site {i+1}: Commissioning year must be between 2025-2035")
+    
+    print(f"🔄 Scoring {len(sites)} user-submitted sites...")
+    start_time = time.time()
+    
+    try:
+        # Convert to format expected by proximity calculator
+        sites_for_calc = []
+        for site in sites:
+            sites_for_calc.append({
+                'site_name': site.site_name,
+                'technology_type': site.technology_type,
+                'capacity_mw': site.capacity_mw,
+                'latitude': site.latitude,
+                'longitude': site.longitude,
+                'commissioning_year': site.commissioning_year,
+                'is_btm': site.is_btm,
+                # Add default status for base scoring
+                'development_status_short': 'planning'
+            })
+        
+        # Calculate proximity scores in batch
+        proximity_scores = await calculate_proximity_scores_batch(sites_for_calc)
+        
+        # Score each site
+        scored_sites = []
+        for i, site_data in enumerate(sites_for_calc):
+            # Get proximity scores for this site
+            if i < len(proximity_scores):
+                prox_scores = proximity_scores[i]
+            else:
+                # Fallback scoring
+                prox_scores = {
+                    'substation_score': 0, 'transmission_score': 0, 'fiber_score': 0,
+                    'ixp_score': 0, 'water_score': 0, 'total_proximity_bonus': 0,
+                    'nearest_distances': {}
+                }
+            
+            # Calculate enhanced score
+            enhanced_scoring = calculate_enhanced_score(site_data, prox_scores)
+            
+            result = {
+                "site_name": site_data['site_name'],
+                "technology_type": site_data['technology_type'],
+                "capacity_mw": site_data['capacity_mw'],
+                "commissioning_year": site_data['commissioning_year'],
+                "is_btm": site_data['is_btm'],
+                "coordinates": [site_data['longitude'], site_data['latitude']],
+                "base_score": enhanced_scoring['base_investment_score'],
+                "proximity_bonus": enhanced_scoring['proximity_bonus'],
+                "enhanced_score": enhanced_scoring['enhanced_investment_score'],
+                "investment_grade": enhanced_scoring['investment_grade'],
+                "color_code": enhanced_scoring['color_code'],
+                "nearest_infrastructure": enhanced_scoring['proximity_details']['nearest_distances']
+            }
+            
+            scored_sites.append(result)
+        
+        processing_time = time.time() - start_time
+        print(f"✅ User sites scored in {processing_time:.2f}s")
+        
+        return scored_sites
+        
+    except Exception as e:
+        print(f"❌ Error scoring user sites: {e}")
+        raise HTTPException(500, f"Scoring failed: {str(e)}")
+
 # Infrastructure endpoints
 @app.get("/api/infrastructure/transmission")
 async def get_transmission_lines():
     """Get power lines for the map"""
-    try:
-        print("🔄 Fetching transmission lines...")
-        lines = await query_supabase("transmission_lines?select=*&limit=500")
-        print(f"✅ Retrieved {len(lines or [])} transmission lines from database")
-        
-        if not lines:
-            print("⚠️ No transmission lines found in database")
-            return {"type": "FeatureCollection", "features": []}
-        
-        features = []
-        processed_count = 0
-        error_count = 0
-        
-        for line in lines:
-            try:
-                if not line.get('path_coordinates'):
-                    continue
-                    
-                coordinates = json.loads(line['path_coordinates'])
-                
-                # Validate coordinates format
-                if not isinstance(coordinates, list) or len(coordinates) < 2:
-                    continue
-                    
-                # Check if coordinates are valid numbers
-                valid_coords = []
-                for coord in coordinates:
-                    if isinstance(coord, list) and len(coord) >= 2:
-                        try:
-                            lng, lat = float(coord[0]), float(coord[1])
-                            # Basic UK/Ireland bounds check
-                            if -15.0 <= lng <= 5.0 and 48.0 <= lat <= 62.0:
-                                valid_coords.append([lng, lat])
-                        except (ValueError, TypeError):
-                            continue
-                
-                if len(valid_coords) < 2:
-                    continue
-                
-                features.append({
-                    "type": "Feature",
-                    "geometry": {
-                        "type": "LineString",
-                        "coordinates": valid_coords
-                    },
-                    "properties": {
-                        "name": line.get('line_name', 'Transmission Line'),
-                        "voltage_kv": line.get('voltage_kv'),
-                        "operator": line.get('operator', 'Unknown'),
-                        "type": "transmission_line"
-                    }
-                })
-                processed_count += 1
-                
-            except json.JSONDecodeError as e:
-                error_count += 1
-                print(f"⚠️ JSON decode error for line: {e}")
-                continue
-            except Exception as e:
-                error_count += 1
-                print(f"⚠️ Processing error for line: {e}")
-                continue
-        
-        print(f"✅ Transmission lines processed: {processed_count} valid, {error_count} errors")
-        
-        return {"type": "FeatureCollection", "features": features}
-        
-    except Exception as e:
-        print(f"❌ Critical error in transmission endpoint: {e}")
-        return {"type": "FeatureCollection", "features": [], "error": str(e)}
+    lines = await query_supabase("transmission_lines?select=*")
+    
+    features = []
+    for line in lines or []:
+        if not line.get('path_coordinates'):
+            continue
+            
+        try:
+            coordinates = json.loads(line['path_coordinates'])
+            features.append({
+                "type": "Feature",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": coordinates
+                },
+                "properties": {
+                    "name": line['line_name'],
+                    "voltage_kv": line['voltage_kv'],
+                    "operator": line['operator'],
+                    "type": "transmission_line"
+                }
+            })
+        except:
+            continue
+    
+    return {"type": "FeatureCollection", "features": features}
 
 @app.get("/api/infrastructure/substations")
 async def get_substations():
@@ -486,28 +542,30 @@ async def get_gsp_boundaries():
     
     features = []
     for boundary in boundaries or []:
-        if not boundary.get('geom'):
+        if not boundary.get('geometry'):
             continue
             
         try:
             # Handle different geometry formats
-            geom = boundary['geom']
+            geom = boundary['geometry']
             
             # If geometry is a string, parse it
             if isinstance(geom, str):
                 geom = json.loads(geom)
             
+            # If it's PostGIS format, you may need to convert
+            # For now, assume it's already in GeoJSON format
             features.append({
                 "type": "Feature",
                 "geometry": geom,
                 "properties": {
-                    "name": boundary.get('name', 'GSP Boundary'),
+                    "name": boundary['name'],
                     "operator": boundary.get('operator', 'NESO'),
                     "type": "gsp_boundary"
                 }
             })
         except Exception as e:
-            print(f"❌ Error processing GSP boundary: {e}")
+            print(f"Error processing GSP boundary: {e}")
             continue
     
     return {"type": "FeatureCollection", "features": features}
@@ -541,11 +599,6 @@ async def get_fiber_cables():
             continue
     
     return {"type": "FeatureCollection", "features": features}
-
-@app.get("/api/infrastructure/network")
-async def get_network_infrastructure():
-    """Get network infrastructure - alias for fiber"""
-    return await get_fiber_cables()
 
 @app.get("/api/infrastructure/ixp")
 async def get_internet_exchanges():
@@ -689,7 +742,6 @@ async def get_enhanced_geojson(limit: int = Query(50, description="Number of pro
                     "operator": project.get('operator'), 
                     "capacity_mw": project.get('capacity_mw'),
                     "county": project.get('county'),
-                    "country": project.get('country'),
                     "base_score": enhanced_scoring['base_investment_score'],
                     "proximity_bonus": enhanced_scoring['proximity_bonus'],
                     "enhanced_score": enhanced_scoring['enhanced_investment_score'],
@@ -713,7 +765,6 @@ async def get_enhanced_geojson(limit: int = Query(50, description="Number of pro
                     "technology_type": project['technology_type'],
                     "capacity_mw": project.get('capacity_mw'),
                     "county": project.get('county'),
-                    "country": project.get('country'),
                     "base_score": basic_score['investment_score'],
                     "proximity_bonus": 0,
                     "enhanced_score": basic_score['investment_score'],
