@@ -5,10 +5,7 @@ import httpx
 import os
 import json
 import time
-import subprocess
-import sys
 from math import radians, sin, cos, asin, sqrt
-from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -20,8 +17,8 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
 
 # Debug startup
-print(f"SUPABASE_URL: {SUPABASE_URL}")
-print(f"SUPABASE_KEY exists: {bool(SUPABASE_KEY)}")
+print(f"✅ SUPABASE_URL: {SUPABASE_URL}")
+print(f"✅ SUPABASE_KEY exists: {bool(SUPABASE_KEY)}")
 
 async def query_supabase(endpoint: str):
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
@@ -68,13 +65,13 @@ async def root():
 @app.get("/health")
 async def health():
     try:
-        print("Testing database connection...")
+        print("🔄 Testing database connection...")
         data = await query_supabase("renewable_projects?select=count")
         count = len(data)
-        print(f"Database connected: {count} records")
+        print(f"✅ Database connected: {count} records")
         return {"status": "healthy", "database": "connected", "projects": count}
     except Exception as e:
-        print(f"Database error: {e}")
+        print(f"❌ Database error: {e}")
         return {"status": "degraded", "database": "disconnected", "error": str(e)}
 
 @app.get("/api/projects")
@@ -175,7 +172,7 @@ def point_to_line_segment_distance(px: float, py: float, x1: float, y1: float, x
 async def calculate_proximity_scores_batch(projects: List[Dict]) -> List[Dict]:
     """OPTIMIZED: Calculate proximity scores for multiple projects efficiently"""
     
-    print("Loading all infrastructure data once...")
+    print("🔄 Loading all infrastructure data once...")
     load_start = time.time()
     
     # Load ALL infrastructure data once (instead of per project)
@@ -187,7 +184,7 @@ async def calculate_proximity_scores_batch(projects: List[Dict]) -> List[Dict]:
         water_resources = await query_supabase("water_resources?select=*")
         
         load_time = time.time() - load_start
-        print(f"Infrastructure loaded in {load_time:.2f}s:")
+        print(f"✅ Infrastructure loaded in {load_time:.2f}s:")
         print(f"   - Substations: {len(substations or [])}")
         print(f"   - Transmission: {len(transmission_lines or [])}")
         print(f"   - Fiber: {len(fiber_cables or [])}")
@@ -195,7 +192,7 @@ async def calculate_proximity_scores_batch(projects: List[Dict]) -> List[Dict]:
         print(f"   - Water: {len(water_resources or [])}")
         
     except Exception as e:
-        print(f"Error loading infrastructure: {e}")
+        print(f"❌ Error loading infrastructure: {e}")
         return []
     
     # Now process each project against the cached data
@@ -385,12 +382,12 @@ def calculate_enhanced_score(project: Dict, proximity_scores: Dict) -> Dict:
 async def get_transmission_lines():
     """Get power lines for the map"""
     try:
-        print("Fetching transmission lines...")
+        print("🔄 Fetching transmission lines...")
         lines = await query_supabase("transmission_lines?select=*&limit=500")
-        print(f"Retrieved {len(lines or [])} transmission lines from database")
+        print(f"✅ Retrieved {len(lines or [])} transmission lines from database")
         
         if not lines:
-            print("No transmission lines found in database")
+            print("⚠️ No transmission lines found in database")
             return {"type": "FeatureCollection", "features": []}
         
         features = []
@@ -440,19 +437,19 @@ async def get_transmission_lines():
                 
             except json.JSONDecodeError as e:
                 error_count += 1
-                print(f"JSON decode error for line: {e}")
+                print(f"⚠️ JSON decode error for line: {e}")
                 continue
             except Exception as e:
                 error_count += 1
-                print(f"Processing error for line: {e}")
+                print(f"⚠️ Processing error for line: {e}")
                 continue
         
-        print(f"Transmission lines processed: {processed_count} valid, {error_count} errors")
+        print(f"✅ Transmission lines processed: {processed_count} valid, {error_count} errors")
         
         return {"type": "FeatureCollection", "features": features}
         
     except Exception as e:
-        print(f"Critical error in transmission endpoint: {e}")
+        print(f"❌ Critical error in transmission endpoint: {e}")
         return {"type": "FeatureCollection", "features": [], "error": str(e)}
 
 @app.get("/api/infrastructure/substations")
@@ -510,7 +507,7 @@ async def get_gsp_boundaries():
                 }
             })
         except Exception as e:
-            print(f"Error processing GSP boundary: {e}")
+            print(f"❌ Error processing GSP boundary: {e}")
             continue
     
     return {"type": "FeatureCollection", "features": features}
@@ -619,206 +616,19 @@ async def get_water_resources():
     
     return {"type": "FeatureCollection", "features": features}
 
-# ADMIN ENDPOINTS - Trigger data fetching
-@app.post("/admin/fetch-gsp")
-async def admin_fetch_gsp():
-    """Run GSP boundaries fetch script"""
-    try:
-        print("Running fetch_gsp_boundaries.py...")
-        result = subprocess.run(
-            [sys.executable, "fetch_gsp_boundaries.py"],
-            capture_output=True,
-            text=True,
-            timeout=300  # 5 minute timeout
-        )
-        
-        if result.returncode == 0:
-            return {
-                "status": "success",
-                "message": "GSP boundaries fetched successfully",
-                "output": result.stdout,
-                "timestamp": datetime.now().isoformat()
-            }
-        else:
-            return {
-                "status": "error",
-                "message": "GSP fetch failed",
-                "error": result.stderr,
-                "timestamp": datetime.now().isoformat()
-            }
-            
-    except subprocess.TimeoutExpired:
-        return {
-            "status": "error",
-            "message": "GSP fetch timed out (>5 minutes)",
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"GSP fetch error: {str(e)}",
-            "timestamp": datetime.now().isoformat()
-        }
-
-@app.post("/admin/fetch-fiber")
-async def admin_fetch_fiber():
-    """Run fiber data fetch script"""
-    try:
-        print("Running fetch_fiber_data.py...")
-        result = subprocess.run(
-            [sys.executable, "fetch_fiber_data.py"],
-            capture_output=True,
-            text=True,
-            timeout=300
-        )
-        
-        if result.returncode == 0:
-            return {
-                "status": "success",
-                "message": "Fiber data fetched successfully",
-                "output": result.stdout,
-                "timestamp": datetime.now().isoformat()
-            }
-        else:
-            return {
-                "status": "error",
-                "message": "Fiber fetch failed",
-                "error": result.stderr,
-                "timestamp": datetime.now().isoformat()
-            }
-            
-    except subprocess.TimeoutExpired:
-        return {
-            "status": "error",
-            "message": "Fiber fetch timed out (>5 minutes)",
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Fiber fetch error: {str(e)}",
-            "timestamp": datetime.now().isoformat()
-        }
-
-@app.post("/admin/fetch-network")
-async def admin_fetch_network():
-    """Run network data fetch script"""
-    try:
-        print("Running fetch_network.py...")
-        result = subprocess.run(
-            [sys.executable, "fetch_network.py"],
-            capture_output=True,
-            text=True,
-            timeout=300
-        )
-        
-        if result.returncode == 0:
-            return {
-                "status": "success",
-                "message": "Network data fetched successfully",
-                "output": result.stdout,
-                "timestamp": datetime.now().isoformat()
-            }
-        else:
-            return {
-                "status": "error",
-                "message": "Network fetch failed",
-                "error": result.stderr,
-                "timestamp": datetime.now().isoformat()
-            }
-            
-    except subprocess.TimeoutExpired:
-        return {
-            "status": "error",
-            "message": "Network fetch timed out (>5 minutes)",
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"Network fetch error: {str(e)}",
-            "timestamp": datetime.now().isoformat()
-        }
-
-@app.post("/admin/sync-all")
-async def admin_sync_all():
-    """Run all infrastructure fetch scripts in sequence"""
-    results = {}
-    
-    # GSP Boundaries
-    try:
-        print("Step 1/3: Running fetch_gsp_boundaries.py...")
-        result = subprocess.run(
-            [sys.executable, "fetch_gsp_boundaries.py"],
-            capture_output=True,
-            text=True,
-            timeout=300
-        )
-        results["gsp"] = {
-            "status": "success" if result.returncode == 0 else "error",
-            "output": result.stdout if result.returncode == 0 else result.stderr
-        }
-    except Exception as e:
-        results["gsp"] = {"status": "error", "output": str(e)}
-    
-    # Fiber Data
-    try:
-        print("Step 2/3: Running fetch_fiber_data.py...")
-        result = subprocess.run(
-            [sys.executable, "fetch_fiber_data.py"],
-            capture_output=True,
-            text=True,
-            timeout=300
-        )
-        results["fiber"] = {
-            "status": "success" if result.returncode == 0 else "error",
-            "output": result.stdout if result.returncode == 0 else result.stderr
-        }
-    except Exception as e:
-        results["fiber"] = {"status": "error", "output": str(e)}
-    
-    # Network Data
-    try:
-        print("Step 3/3: Running fetch_network.py...")
-        result = subprocess.run(
-            [sys.executable, "fetch_network.py"],
-            capture_output=True,
-            text=True,
-            timeout=300
-        )
-        results["network"] = {
-            "status": "success" if result.returncode == 0 else "error",
-            "output": result.stdout if result.returncode == 0 else result.stderr
-        }
-    except Exception as e:
-        results["network"] = {"status": "error", "output": str(e)}
-    
-    # Overall status
-    success_count = sum(1 for r in results.values() if r["status"] == "success")
-    overall_status = "success" if success_count == 3 else "partial" if success_count > 0 else "failed"
-    
-    return {
-        "overall_status": overall_status,
-        "completed": success_count,
-        "total": 3,
-        "results": results,
-        "timestamp": datetime.now().isoformat(),
-        "message": f"Sync completed: {success_count}/3 scripts successful"
-    }
-
 # OPTIMIZED ENHANCED ENDPOINT - BATCH VERSION
 @app.get("/api/projects/enhanced")
 async def get_enhanced_geojson(limit: int = Query(50, description="Number of projects to process")):
     """OPTIMIZED BATCH VERSION: Get projects with enhanced proximity-based scoring"""
     start_time = time.time()
     
-    print(f"ENHANCED ENDPOINT CALLED (BATCH VERSION) - Processing {limit} projects...")
+    print(f"🚀 ENHANCED ENDPOINT CALLED (BATCH VERSION) - Processing {limit} projects...")
     
     try:
         projects = await query_supabase(f"renewable_projects?select=*&limit={limit}")
-        print(f"Loaded {len(projects)} projects from database")
+        print(f"✅ Loaded {len(projects)} projects from database")
     except Exception as e:
-        print(f"Database error: {e}")
+        print(f"❌ Database error: {e}")
         return {"error": "Database connection failed", "type": "FeatureCollection", "features": []}
     
     # Filter projects with valid coordinates
@@ -827,23 +637,23 @@ async def get_enhanced_geojson(limit: int = Query(50, description="Number of pro
         if project.get('longitude') and project.get('latitude'):
             valid_projects.append(project)
     
-    print(f"{len(valid_projects)} projects have valid coordinates")
+    print(f"📍 {len(valid_projects)} projects have valid coordinates")
     
     if not valid_projects:
         return {"type": "FeatureCollection", "features": [], "metadata": {"error": "No projects with valid coordinates"}}
     
     try:
         # BATCH PROCESSING: Calculate all proximity scores at once
-        print("Starting batch proximity calculation...")
+        print("🔄 Starting batch proximity calculation...")
         batch_start = time.time()
         
         all_proximity_scores = await calculate_proximity_scores_batch(valid_projects)
         
         batch_time = time.time() - batch_start
-        print(f"Batch proximity calculation completed in {batch_time:.2f}s")
+        print(f"✅ Batch proximity calculation completed in {batch_time:.2f}s")
         
     except Exception as e:
-        print(f"Error in batch proximity calculation: {e}")
+        print(f"❌ Error in batch proximity calculation: {e}")
         # Fallback to basic scoring
         all_proximity_scores = []
         for _ in valid_projects:
@@ -890,7 +700,7 @@ async def get_enhanced_geojson(limit: int = Query(50, description="Number of pro
             })
             
         except Exception as e:
-            print(f"Error processing project {i+1}: {e}")
+            print(f"❌ Error processing project {i+1}: {e}")
             # Add basic scoring as fallback
             basic_score = calculate_score(project)
             features.append({
@@ -914,7 +724,7 @@ async def get_enhanced_geojson(limit: int = Query(50, description="Number of pro
             })
     
     processing_time = time.time() - start_time
-    print(f"BATCH ENHANCED ENDPOINT COMPLETE: {len(features)} features in {processing_time:.2f}s")
+    print(f"🎯 BATCH ENHANCED ENDPOINT COMPLETE: {len(features)} features in {processing_time:.2f}s")
     
     return {
         "type": "FeatureCollection", 
