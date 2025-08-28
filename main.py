@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List
 import httpx
 import os
 from dotenv import load_dotenv
@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-app = FastAPI(title="Infranodal API", version="2.1.0")
+app = FastAPI(title="Infranodal API", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -17,38 +17,6 @@ SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
 # Debug startup
 print(f"✅ SUPABASE_URL: {SUPABASE_URL}")
 print(f"✅ SUPABASE_KEY exists: {bool(SUPABASE_KEY)}")
-
-# NEW: Persona weight definitions
-PERSONA_WEIGHTS = {
-    "hyperscaler": {
-        "capacity": 0.40,
-        "grid": 0.30, 
-        "fiber": 0.20,
-        "water": 0.05,
-        "stage": 0.05
-    },
-    "colocation": {
-        "capacity": 0.15,
-        "grid": 0.25,
-        "fiber": 0.40,
-        "water": 0.10,
-        "stage": 0.10
-    },
-    "ai_hpc": {
-        "capacity": 0.30,
-        "grid": 0.30,
-        "fiber": 0.10,
-        "water": 0.20,
-        "stage": 0.10
-    }
-}
-
-# Calculate maximum possible scores per persona
-PERSONA_MAX_SCORES = {
-    "hyperscaler": (40 * 0.40) + (100 * 0.30) + (20 * 0.20) + (15 * 0.05) + (40 * 0.05),  # 52.75
-    "colocation": (40 * 0.15) + (100 * 0.25) + (20 * 0.40) + (15 * 0.10) + (40 * 0.10),   # 44.5
-    "ai_hpc": (40 * 0.30) + (100 * 0.30) + (20 * 0.10) + (15 * 0.20) + (40 * 0.10)        # 49.0
-}
 
 # NEW: User site data model
 class UserSite(BaseModel):
@@ -68,16 +36,7 @@ async def query_supabase(endpoint: str):
             return response.json()
         raise HTTPException(500, f"Database error: {response.status_code}")
 
-def get_color_from_score(score: float) -> str:
-    """Map 0-10 score to color code"""
-    if score >= 9.0: return "#00DD00"      # Dark Green
-    elif score >= 7.5: return "#7FFF00"   # Light Green  
-    elif score >= 6.0: return "#FFFF00"   # Yellow
-    elif score >= 4.0: return "#FFA500"   # Orange
-    else: return "#FF0000"                 # Red
-
 def calculate_score(project: Dict) -> Dict:
-    """Original base scoring function - unchanged for backward compatibility"""
     score = 0
     capacity = project.get('capacity_mw', 0) or 0
     status = str(project.get('development_status_short', '')).lower()
@@ -107,122 +66,9 @@ def calculate_score(project: Dict) -> Dict:
     
     return {"investment_score": score, "investment_grade": grade, "color_code": color}
 
-def calculate_component_scores(project: Dict, proximity_scores: Dict) -> Dict:
-    """Calculate individual component scores for persona weighting"""
-    
-    # Capacity score (0-40)
-    capacity = project.get('capacity_mw', 0) or 0
-    if capacity >= 100: capacity_score = 40
-    elif capacity >= 50: capacity_score = 30
-    elif capacity >= 20: capacity_score = 20
-    else: capacity_score = 10
-    
-    # Development stage score (0-40)
-    status = str(project.get('development_status_short', '')).lower()
-    if 'operational' in status: stage_score = 40
-    elif 'construction' in status: stage_score = 35
-    elif 'granted' in status: stage_score = 30
-    elif 'submitted' in status: stage_score = 20
-    else: stage_score = 10
-    
-    # Technology score (0-20)
-    tech = str(project.get('technology_type', '')).lower()
-    if 'solar' in tech: tech_score = 20
-    elif 'battery' in tech: tech_score = 18
-    else: tech_score = 15
-    
-    # Grid infrastructure score (substations + transmission, 0-100)
-    grid_score = proximity_scores.get('substation_score', 0) + proximity_scores.get('transmission_score', 0)
-    
-    # Fiber score (0-20)
-    fiber_score = proximity_scores.get('fiber_score', 0)
-    
-    # Water score (0-15)  
-    water_score = proximity_scores.get('water_score', 0)
-    
-    return {
-        "capacity": capacity_score,
-        "stage": stage_score,
-        "technology": tech_score,
-        "grid": grid_score,
-        "fiber": fiber_score,
-        "water": water_score
-    }
-
-def calculate_persona_scores(component_scores: Dict) -> Dict:
-    """Calculate weighted scores for each persona"""
-    
-    personas = {}
-    
-    for persona_name, weights in PERSONA_WEIGHTS.items():
-        # Calculate weighted score
-        weighted_score = (
-            component_scores["capacity"] * weights["capacity"] +
-            component_scores["grid"] * weights["grid"] +
-            component_scores["fiber"] * weights["fiber"] +
-            component_scores["water"] * weights["water"] +
-            component_scores["stage"] * weights["stage"]
-        )
-        
-        # Normalize to 0-10 scale
-        max_possible = PERSONA_MAX_SCORES[persona_name]
-        normalized_score = (weighted_score / max_possible) * 10
-        normalized_score = round(min(10.0, max(0.0, normalized_score)), 1)
-        
-        # Get color
-        color = get_color_from_score(normalized_score)
-        
-        personas[persona_name] = {
-            "score": normalized_score,
-            "color": color,
-            "weighted_score": round(weighted_score, 1),
-            "max_possible": round(max_possible, 1)
-        }
-    
-    return personas
-
-def calculate_enhanced_score(project: Dict, proximity_scores: Dict) -> Dict:
-    """UPDATED: Calculate both legacy and persona-based scoring"""
-    
-    # Get original legacy scoring (for backward compatibility)
-    original_scoring = calculate_score(project)
-    base_score = original_scoring['investment_score']
-    
-    # Add proximity bonus (legacy method)
-    proximity_bonus = min(proximity_scores['total_proximity_bonus'], 95)
-    enhanced_score = min(base_score + proximity_bonus, 195)
-    
-    # Legacy enhanced grading scale
-    if enhanced_score >= 170: grade, color = "A++", "#00DD00"
-    elif enhanced_score >= 150: grade, color = "A+", "#00FF00"  
-    elif enhanced_score >= 130: grade, color = "A", "#7FFF00"
-    elif enhanced_score >= 110: grade, color = "B+", "#FFFF00"
-    elif enhanced_score >= 90: grade, color = "B", "#FFA500"
-    elif enhanced_score >= 70: grade, color = "C+", "#FF7700"
-    elif enhanced_score >= 50: grade, color = "C", "#FF4500"
-    else: grade, color = "D", "#FF0000"
-    
-    # NEW: Calculate component scores and persona scores
-    component_scores = calculate_component_scores(project, proximity_scores)
-    persona_scores = calculate_persona_scores(component_scores)
-    
-    return {
-        # Legacy format (keep for backward compatibility)
-        "base_investment_score": base_score,
-        "proximity_bonus": round(proximity_bonus, 1),
-        "enhanced_investment_score": round(enhanced_score, 1),
-        "investment_grade": grade,
-        "color_code": color,
-        "proximity_details": proximity_scores,
-        
-        # NEW: Persona-based scoring
-        "personas": persona_scores,
-        "component_breakdown": component_scores
-    }
-
 @app.get("/")
 async def root():
-    return {"message": "Infranodal API v2.1 - Persona-Based Scoring", "status": "active"}
+    return {"message": "Infranodal API v2.0", "status": "active"}
 
 @app.get("/health")
 async def health():
@@ -514,10 +360,40 @@ async def calculate_proximity_scores_batch(projects: List[Dict]) -> List[Dict]:
     
     return results
 
-# UPDATED: User site scoring endpoint with persona scoring
+def calculate_enhanced_score(project: Dict, proximity_scores: Dict) -> Dict:
+    """Combine original project scoring with proximity bonus"""
+    
+    # Get original score
+    original_scoring = calculate_score(project)
+    base_score = original_scoring['investment_score']
+    
+    # Add proximity bonus
+    proximity_bonus = min(proximity_scores['total_proximity_bonus'], 95)
+    enhanced_score = min(base_score + proximity_bonus, 195)
+    
+    # Enhanced grading scale
+    if enhanced_score >= 170: grade, color = "A++", "#00DD00"
+    elif enhanced_score >= 150: grade, color = "A+", "#00FF00"  
+    elif enhanced_score >= 130: grade, color = "A", "#7FFF00"
+    elif enhanced_score >= 110: grade, color = "B+", "#FFFF00"
+    elif enhanced_score >= 90: grade, color = "B", "#FFA500"
+    elif enhanced_score >= 70: grade, color = "C+", "#FF7700"
+    elif enhanced_score >= 50: grade, color = "C", "#FF4500"
+    else: grade, color = "D", "#FF0000"
+    
+    return {
+        "base_investment_score": base_score,
+        "proximity_bonus": round(proximity_bonus, 1),
+        "enhanced_investment_score": round(enhanced_score, 1),
+        "investment_grade": grade,
+        "color_code": color,
+        "proximity_details": proximity_scores
+    }
+
+# NEW: User site scoring endpoint
 @app.post("/api/user-sites/score")
 async def score_user_sites(sites: List[UserSite]):
-    """Score user-uploaded renewable energy sites with persona-based analysis"""
+    """Score user-uploaded renewable energy sites"""
     
     if not sites:
         raise HTTPException(400, "No sites provided")
@@ -536,7 +412,7 @@ async def score_user_sites(sites: List[UserSite]):
         if not (2025 <= site.commissioning_year <= 2035):
             raise HTTPException(400, f"Site {i+1}: Commissioning year must be between 2025-2035")
     
-    print(f"🔄 Scoring {len(sites)} user-submitted sites with persona analysis...")
+    print(f"🔄 Scoring {len(sites)} user-submitted sites...")
     start_time = time.time()
     
     try:
@@ -572,7 +448,7 @@ async def score_user_sites(sites: List[UserSite]):
                     'nearest_distances': {}
                 }
             
-            # Calculate enhanced score (both legacy and persona-based)
+            # Calculate enhanced score
             enhanced_scoring = calculate_enhanced_score(site_data, prox_scores)
             
             result = {
@@ -582,24 +458,18 @@ async def score_user_sites(sites: List[UserSite]):
                 "commissioning_year": site_data['commissioning_year'],
                 "is_btm": site_data['is_btm'],
                 "coordinates": [site_data['longitude'], site_data['latitude']],
-                
-                # LEGACY FORMAT (backward compatibility)
                 "base_score": enhanced_scoring['base_investment_score'],
                 "proximity_bonus": enhanced_scoring['proximity_bonus'],
                 "enhanced_score": enhanced_scoring['enhanced_investment_score'],
                 "investment_grade": enhanced_scoring['investment_grade'],
                 "color_code": enhanced_scoring['color_code'],
-                "nearest_infrastructure": enhanced_scoring['proximity_details']['nearest_distances'],
-                
-                # NEW PERSONA-BASED FORMAT
-                "personas": enhanced_scoring['personas'],
-                "component_breakdown": enhanced_scoring['component_breakdown']
+                "nearest_infrastructure": enhanced_scoring['proximity_details']['nearest_distances']
             }
             
             scored_sites.append(result)
         
         processing_time = time.time() - start_time
-        print(f"✅ User sites scored with persona analysis in {processing_time:.2f}s")
+        print(f"✅ User sites scored in {processing_time:.2f}s")
         
         return scored_sites
         
@@ -607,7 +477,7 @@ async def score_user_sites(sites: List[UserSite]):
         print(f"❌ Error scoring user sites: {e}")
         raise HTTPException(500, f"Scoring failed: {str(e)}")
 
-# Infrastructure endpoints (unchanged)
+# Infrastructure endpoints
 @app.get("/api/infrastructure/transmission")
 async def get_transmission_lines():
     """Get power lines for the map"""
@@ -745,3 +615,180 @@ async def get_internet_exchanges():
             "geometry": {
                 "type": "Point",
                 "coordinates": [ixp['longitude'], ixp['latitude']]
+            },
+            "properties": {
+                "name": ixp['ixp_name'],
+                "operator": ixp['operator'],
+                "city": ixp['city'],
+                "networks": ixp['connected_networks'],
+                "capacity_gbps": ixp['capacity_gbps'],
+                "type": "ixp"
+            }
+        })
+    
+    return {"type": "FeatureCollection", "features": features}
+
+@app.get("/api/infrastructure/water")
+async def get_water_resources():
+    """Get water sources for the map"""
+    water_sources = await query_supabase("water_resources?select=*")
+    
+    features = []
+    for water in water_sources or []:
+        if not water.get('coordinates'):
+            continue
+            
+        try:
+            coordinates = json.loads(water['coordinates'])
+            
+            if len(coordinates) == 2 and isinstance(coordinates[0], (int, float)):
+                geometry = {
+                    "type": "Point",
+                    "coordinates": coordinates
+                }
+            else:
+                geometry = {
+                    "type": "LineString",
+                    "coordinates": coordinates
+                }
+            
+            features.append({
+                "type": "Feature",
+                "geometry": geometry,
+                "properties": {
+                    "name": water['resource_name'],
+                    "resource_type": water['resource_type'],
+                    "water_quality": water['water_quality'],
+                    "flow_rate": water.get('flow_rate_liters_sec'),
+                    "capacity": water.get('capacity_million_liters'),
+                    "type": "water_resource"
+                }
+            })
+        except:
+            continue
+    
+    return {"type": "FeatureCollection", "features": features}
+
+# OPTIMIZED ENHANCED ENDPOINT - BATCH VERSION
+@app.get("/api/projects/enhanced")
+async def get_enhanced_geojson(limit: int = Query(50, description="Number of projects to process")):
+    """OPTIMIZED BATCH VERSION: Get projects with enhanced proximity-based scoring"""
+    start_time = time.time()
+    
+    print(f"🚀 ENHANCED ENDPOINT CALLED (BATCH VERSION) - Processing {limit} projects...")
+    
+    try:
+        projects = await query_supabase(f"renewable_projects?select=*&limit={limit}")
+        print(f"✅ Loaded {len(projects)} projects from database")
+    except Exception as e:
+        print(f"❌ Database error: {e}")
+        return {"error": "Database connection failed", "type": "FeatureCollection", "features": []}
+    
+    # Filter projects with valid coordinates
+    valid_projects = []
+    for project in projects:
+        if project.get('longitude') and project.get('latitude'):
+            valid_projects.append(project)
+    
+    print(f"📍 {len(valid_projects)} projects have valid coordinates")
+    
+    if not valid_projects:
+        return {"type": "FeatureCollection", "features": [], "metadata": {"error": "No projects with valid coordinates"}}
+    
+    try:
+        # BATCH PROCESSING: Calculate all proximity scores at once
+        print("🔄 Starting batch proximity calculation...")
+        batch_start = time.time()
+        
+        all_proximity_scores = await calculate_proximity_scores_batch(valid_projects)
+        
+        batch_time = time.time() - batch_start
+        print(f"✅ Batch proximity calculation completed in {batch_time:.2f}s")
+        
+    except Exception as e:
+        print(f"❌ Error in batch proximity calculation: {e}")
+        # Fallback to basic scoring
+        all_proximity_scores = []
+        for _ in valid_projects:
+            all_proximity_scores.append({
+                'substation_score': 0, 'transmission_score': 0, 'fiber_score': 0,
+                'ixp_score': 0, 'water_score': 0, 'total_proximity_bonus': 0,
+                'nearest_distances': {}
+            })
+    
+    # Build features with enhanced scoring
+    features = []
+    for i, project in enumerate(valid_projects):
+        try:
+            if i < len(all_proximity_scores):
+                proximity_scores = all_proximity_scores[i]
+            else:
+                # Fallback scoring
+                proximity_scores = {
+                    'substation_score': 0, 'transmission_score': 0, 'fiber_score': 0,
+                    'ixp_score': 0, 'water_score': 0, 'total_proximity_bonus': 0,
+                    'nearest_distances': {}
+                }
+            
+            enhanced_scoring = calculate_enhanced_score(project, proximity_scores)
+            
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [project['longitude'], project['latitude']]},
+                "properties": {
+                    "ref_id": project['ref_id'],
+                    "site_name": project['site_name'],
+                    "technology_type": project['technology_type'],
+                    "operator": project.get('operator'), 
+                    "capacity_mw": project.get('capacity_mw'),
+                    "county": project.get('county'),
+                    "base_score": enhanced_scoring['base_investment_score'],
+                    "proximity_bonus": enhanced_scoring['proximity_bonus'],
+                    "enhanced_score": enhanced_scoring['enhanced_investment_score'],
+                    "investment_grade": enhanced_scoring['investment_grade'],
+                    "color_code": enhanced_scoring['color_code'],
+                    "nearest_infrastructure": enhanced_scoring['proximity_details']['nearest_distances']
+                }
+            })
+            
+        except Exception as e:
+            print(f"❌ Error processing project {i+1}: {e}")
+            # Add basic scoring as fallback
+            basic_score = calculate_score(project)
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [project['longitude'], project['latitude']]},
+                "properties": {
+                    "ref_id": project['ref_id'],
+                    "site_name": project['site_name'],
+                    "operator": project.get('operator'),  
+                    "technology_type": project['technology_type'],
+                    "capacity_mw": project.get('capacity_mw'),
+                    "county": project.get('county'),
+                    "base_score": basic_score['investment_score'],
+                    "proximity_bonus": 0,
+                    "enhanced_score": basic_score['investment_score'],
+                    "investment_grade": basic_score['investment_grade'],
+                    "color_code": basic_score['color_code'],
+                    "nearest_infrastructure": {}
+                }
+            })
+    
+    processing_time = time.time() - start_time
+    print(f"🎯 BATCH ENHANCED ENDPOINT COMPLETE: {len(features)} features in {processing_time:.2f}s")
+    
+    return {
+        "type": "FeatureCollection", 
+        "features": features,
+        "metadata": {
+            "processing_time_seconds": round(processing_time, 2),
+            "projects_processed": len(features),
+            "algorithm_status": "OPTIMIZED: Batch proximity scoring",
+            "performance_improvement": f"Expected 10-50x faster than individual processing",
+            "batch_optimization": "Infrastructure loaded once, not per project"
+        }
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
