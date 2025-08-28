@@ -1,5 +1,5 @@
 # Infranodal - Renewable Energy Investment Analysis Platform
-
+NB Hero can be changed here: https://github.com/SkillAdvert/infranode-cloud-flow/blob/main/src/pages/PersonaSelection.tsx
 ## Project Overview
 Interactive web application enabling renewable energy investors and developers to assess site viability through proximity-based infrastructure scoring. The platform combines existing project databases with real-time infrastructure analysis, providing investment grades from D to A++ based on comprehensive scoring algorithms.
 
