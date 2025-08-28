@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-app = FastAPI(title="Infranodal API", version="2.0.0")
+app = FastAPI(title="Infranodal API", version="2.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -18,6 +18,37 @@ SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
 print(f"✅ SUPABASE_URL: {SUPABASE_URL}")
 print(f"✅ SUPABASE_KEY exists: {bool(SUPABASE_KEY)}")
 
+# Persona weight definitions
+PERSONA_WEIGHTS = {
+    "hyperscaler": {
+        "capacity": 0.40,
+        "grid": 0.30, 
+        "fiber": 0.20,
+        "water": 0.05,
+        "stage": 0.05
+    },
+    "colocation": {
+        "capacity": 0.15,
+        "grid": 0.25,
+        "fiber": 0.40,
+        "water": 0.10,
+        "stage": 0.10
+    },
+    "ai_hpc": {
+        "capacity": 0.30,
+        "grid": 0.30,
+        "fiber": 0.10,
+        "water": 0.20,
+        "stage": 0.10
+    }
+}
+
+# Calculate maximum possible scores per persona
+PERSONA_MAX_SCORES = {
+    "hyperscaler": (40 * 0.40) + (100 * 0.30) + (20 * 0.20) + (15 * 0.05) + (40 * 0.05),  # 52.75
+    "colocation": (40 * 0.15) + (100 * 0.25) + (20 * 0.40) + (15 * 0.10) + (40 * 0.10),   # 44.5
+    "ai_hpc": (40 * 0.30) + (100 * 0.30) + (20 * 0.10) + (15 * 0.20) + (40 * 0.10)        # 49.0
+}
 # NEW: User site data model
 class UserSite(BaseModel):
     site_name: str
@@ -65,7 +96,87 @@ def calculate_score(project: Dict) -> Dict:
     else: grade, color = "D", "#FF0000"
     
     return {"investment_score": score, "investment_grade": grade, "color_code": color}
+def get_color_from_score(score: float) -> str:
+    """Map 0-10 score to color code"""
+    if score >= 9.0: return "#00DD00"      # Dark Green
+    elif score >= 7.5: return "#7FFF00"   # Light Green  
+    elif score >= 6.0: return "#FFFF00"   # Yellow
+    elif score >= 4.0: return "#FFA500"   # Orange
+    else: return "#FF0000"                 # Red
 
+def calculate_component_scores(project: Dict, proximity_scores: Dict) -> Dict:
+    """Calculate individual component scores for persona weighting"""
+    
+    # Capacity score (0-40)
+    capacity = project.get('capacity_mw', 0) or 0
+    if capacity >= 100: capacity_score = 40
+    elif capacity >= 50: capacity_score = 30
+    elif capacity >= 20: capacity_score = 20
+    else: capacity_score = 10
+    
+    # Development stage score (0-40)
+    status = str(project.get('development_status_short', '')).lower()
+    if 'operational' in status: stage_score = 40
+    elif 'construction' in status: stage_score = 35
+    elif 'granted' in status: stage_score = 30
+    elif 'submitted' in status: stage_score = 20
+    else: stage_score = 10
+    
+    # Technology score (0-20) - kept for potential future use
+    tech = str(project.get('technology_type', '')).lower()
+    if 'solar' in tech: tech_score = 20
+    elif 'battery' in tech: tech_score = 18
+    else: tech_score = 15
+    
+    # Grid infrastructure score (substations + transmission, 0-100)
+    grid_score = proximity_scores.get('substation_score', 0) + proximity_scores.get('transmission_score', 0)
+    
+    # Fiber score (0-20)
+    fiber_score = proximity_scores.get('fiber_score', 0)
+    
+    # Water score (0-15)  
+    water_score = proximity_scores.get('water_score', 0)
+    
+    return {
+        "capacity": capacity_score,
+        "stage": stage_score,
+        "technology": tech_score,
+        "grid": grid_score,
+        "fiber": fiber_score,
+        "water": water_score
+    }
+
+def calculate_persona_scores(component_scores: Dict) -> Dict:
+    """Calculate weighted scores for each persona"""
+    
+    personas = {}
+    
+    for persona_name, weights in PERSONA_WEIGHTS.items():
+        # Calculate weighted score
+        weighted_score = (
+            component_scores["capacity"] * weights["capacity"] +
+            component_scores["grid"] * weights["grid"] +
+            component_scores["fiber"] * weights["fiber"] +
+            component_scores["water"] * weights["water"] +
+            component_scores["stage"] * weights["stage"]
+        )
+        
+        # Normalize to 0-10 scale
+        max_possible = PERSONA_MAX_SCORES[persona_name]
+        normalized_score = (weighted_score / max_possible) * 10
+        normalized_score = round(min(10.0, max(0.0, normalized_score)), 1)
+        
+        # Get color
+        color = get_color_from_score(normalized_score)
+        
+        personas[persona_name] = {
+            "score": normalized_score,
+            "color": color,
+            "weighted_score": round(weighted_score, 1),
+            "max_possible": round(max_possible, 1)
+        }
+    
+    return personas
 @app.get("/")
 async def root():
     return {"message": "Infranodal API v2.0", "status": "active"}
@@ -361,17 +472,17 @@ async def calculate_proximity_scores_batch(projects: List[Dict]) -> List[Dict]:
     return results
 
 def calculate_enhanced_score(project: Dict, proximity_scores: Dict) -> Dict:
-    """Combine original project scoring with proximity bonus"""
+    """UPDATED: Calculate both legacy and persona-based scoring"""
     
-    # Get original score
+    # Get original legacy scoring (for backward compatibility)
     original_scoring = calculate_score(project)
     base_score = original_scoring['investment_score']
     
-    # Add proximity bonus
+    # Add proximity bonus (legacy method)
     proximity_bonus = min(proximity_scores['total_proximity_bonus'], 95)
     enhanced_score = min(base_score + proximity_bonus, 195)
     
-    # Enhanced grading scale
+    # Legacy enhanced grading scale
     if enhanced_score >= 170: grade, color = "A++", "#00DD00"
     elif enhanced_score >= 150: grade, color = "A+", "#00FF00"  
     elif enhanced_score >= 130: grade, color = "A", "#7FFF00"
@@ -381,13 +492,22 @@ def calculate_enhanced_score(project: Dict, proximity_scores: Dict) -> Dict:
     elif enhanced_score >= 50: grade, color = "C", "#FF4500"
     else: grade, color = "D", "#FF0000"
     
+    # NEW: Calculate component scores and persona scores
+    component_scores = calculate_component_scores(project, proximity_scores)
+    persona_scores = calculate_persona_scores(component_scores)
+    
     return {
+        # Legacy format (keep for backward compatibility)
         "base_investment_score": base_score,
         "proximity_bonus": round(proximity_bonus, 1),
         "enhanced_investment_score": round(enhanced_score, 1),
         "investment_grade": grade,
         "color_code": color,
-        "proximity_details": proximity_scores
+        "proximity_details": proximity_scores,
+        
+        # NEW: Persona-based scoring
+        "personas": persona_scores,
+        "component_breakdown": component_scores
     }
 
 # NEW: User site scoring endpoint
@@ -463,7 +583,10 @@ async def score_user_sites(sites: List[UserSite]):
                 "enhanced_score": enhanced_scoring['enhanced_investment_score'],
                 "investment_grade": enhanced_scoring['investment_grade'],
                 "color_code": enhanced_scoring['color_code'],
-                "nearest_infrastructure": enhanced_scoring['proximity_details']['nearest_distances']
+                "nearest_infrastructure": enhanced_scoring['proximity_details']['nearest_distances'],
+                # ADD THESE TWO LINES
+                "personas": enhanced_scoring['personas'],
+                "component_breakdown": enhanced_scoring['component_breakdown']
             }
             
             scored_sites.append(result)
@@ -747,7 +870,9 @@ async def get_enhanced_geojson(limit: int = Query(50, description="Number of pro
                     "enhanced_score": enhanced_scoring['enhanced_investment_score'],
                     "investment_grade": enhanced_scoring['investment_grade'],
                     "color_code": enhanced_scoring['color_code'],
-                    "nearest_infrastructure": enhanced_scoring['proximity_details']['nearest_distances']
+                    "nearest_infrastructure": enhanced_scoring['proximity_details']['nearest_distances'],
+                    "personas": enhanced_scoring['personas'],
+                    "component_breakdown": enhanced_scoring['component_breakdown']
                 }
             })
             
@@ -792,3 +917,4 @@ async def get_enhanced_geojson(limit: int = Query(50, description="Number of pro
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
