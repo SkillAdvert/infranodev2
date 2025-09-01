@@ -1,11 +1,12 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Literal
 import httpx
 import os
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
+PersonaType = Literal["hyperscaler", "colocation", "edge_computing"]
 load_dotenv()
 
 app = FastAPI(title="Infranodal API", version="2.1.0")
@@ -917,4 +918,5 @@ async def get_enhanced_geojson(limit: int = Query(50, description="Number of pro
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
