@@ -1,323 +1,4 @@
 # Infranodal - Renewable Energy Investment Analysis Platform
-NB Hero can be changed here: https://github.com/SkillAdvert/infranode-cloud-flow/blob/main/src/pages/PersonaSelection.tsx
-## Project Overview
-Interactive web application enabling renewable energy investors and developers to assess site viability through proximity-based infrastructure scoring. The platform combines existing project databases with real-time infrastructure analysis, providing investment grades from D to A++ based on comprehensive scoring algorithms.
-
-## Current Architecture
-
-### Backend (Production Ready)
-- **Framework**: FastAPI with Python 3.9+
-- **Database**: Supabase PostgreSQL with PostGIS extensions
-- **Deployment**: Render.com at `https://infranodev2.onrender.com`
-- **Performance**: Batch processing optimization (10-50x faster than individual queries)
-- **Data Sources**: 
-  - NESO GSP boundary data (333 features) 
-  - OpenStreetMap telecommunications infrastructure (549+ segments)
-  - Manual infrastructure datasets (substations, IXPs, water resources)
-
-### Frontend (React + TypeScript)
-- **Framework**: React 18 + TypeScript
-- **Styling**: Tailwind CSS + shadcn/ui components
-- **Mapping**: Mapbox GL JS with professional infrastructure visualization
-- **State Management**: React hooks with optimized re-rendering
-- **Build System**: Vite/Create React App compatible
-
-### Database Schema
-```sql
--- Core Tables (Production)
-renewable_projects (100+ records) - Existing UK renewable projects
-electrical_grid - GSP boundaries and grid infrastructure  
-transmission_lines - Power transmission network
-substations - Electrical substations with capacity data
-fiber_cables - Telecommunications fiber networks
-internet_exchange_points - Data center connectivity hubs
-water_resources - Water sources for cooling/operations
-```
-
-## Investment Scoring Algorithm (Production Tested)
-
-### Base Investment Score (0-100 points)
-- **Project Capacity**: 
-  - 100MW+ = 40 points (utility-scale premium)
-  - 50-100MW = 30 points (commercial scale)
-  - 20-50MW = 20 points (distributed scale)
-  - <20MW = 10 points (small scale)
-- **Development Status**: 
-  - Operational = 40 points (revenue generating)
-  - Under Construction = 35 points (low execution risk)
-  - Planning Granted = 30 points (regulatory approval secured)
-  - Application Submitted = 20 points (planning risk)
-  - Early Planning = 10 points (high risk)
-- **Technology Premium**: 
-  - Solar PV = 20 points (proven technology)
-  - Battery Storage = 18 points (grid services value)
-  - Wind/Other = 15 points (baseline)
-
-### Infrastructure Proximity Bonus (0-95 points)
-**Distance-based exponential decay scoring:**
-- **Grid Connection Access**: Up to 50 points
-  - Substations (primary connection points)
-  - Transmission lines (using point-to-line distance algorithms)
-- **Digital Infrastructure**: Up to 20 points
-  - Fiber optic networks (co-location opportunities)
-- **Strategic Infrastructure**: Up to 25 points
-  - Internet Exchange Points (10 points - data center proximity)
-  - Water Resources (15 points - cooling/operations)
-
-**Distance Calculation Methods:**
-- Point-to-point: Haversine formula for accuracy
-- Point-to-line: Geometric shortest distance algorithms
-- Exponential decay: f(d) = s_max * e^(-4.6d/d_max) where d_max=100km
-
-### Enhanced Investment Grades
-- **Total Range**: 0-195 points (base + proximity)
-- **A++ (170-195)**: Premium investment opportunities with optimal infrastructure access
-- **A+ (150-169)**: Strong opportunities with good infrastructure
-- **A (130-149)**: Good opportunities with adequate access
-- **B+ (110-129)**: Moderate opportunities, some infrastructure gaps
-- **B (90-109)**: Baseline viability, limited infrastructure benefits
-- **C+ (70-89)**: Below-average opportunities, infrastructure challenges
-- **C (50-69)**: Poor infrastructure access, high development costs
-- **D (0-49)**: Unfavorable locations for development
-
-## API Endpoints (Production)
-
-### Core Data Endpoints
-```http
-GET /api/projects/enhanced?limit=100
-# Returns: Enhanced scored renewable projects with proximity analysis
-
-GET /api/projects/geojson  
-# Returns: Basic project data in GeoJSON format
-
-POST /api/user-sites/score
-# Payload: User-defined site parameters
-# Returns: Real-time investment scoring and infrastructure analysis
-```
-
-### Infrastructure Visualization Endpoints
-```http
-GET /api/infrastructure/transmission   # Power transmission lines
-GET /api/infrastructure/substations    # Electrical substations
-GET /api/infrastructure/gsp           # Grid Supply Point boundaries
-GET /api/infrastructure/fiber         # Telecommunications fiber
-GET /api/infrastructure/ixp          # Internet Exchange Points  
-GET /api/infrastructure/water        # Water resources
-```
-
-### Health & Diagnostics
-```http
-GET /health                          # System health check
-GET /                               # API status and version
-```
-
-## Component Architecture
-
-### DynamicSiteMap.tsx (Core Map Interface)
-**Responsibilities:**
-- Mapbox GL integration with UK/Ireland bounds (49.8-60.9°N, -10.8-2.0°E)
-- Project visualization with investment-grade color coding
-- Infrastructure layer management and styling
-- Interactive popups with detailed project/infrastructure information
-- Clustering for performance at scale
-- Click-to-place functionality for site assessment
-
-**Current Issues:**
-- TypeScript interface mismatch in infrastructure toggle handlers
-- MapLayerControls component creates UI duplication and confusion
-- Infrastructure layer visualization disabled due to compilation errors
-
-**Technical Specifications:**
-```typescript
-interface Project {
-  properties: {
-    ref_id?: string;
-    site_name: string;
-    technology_type: string;
-    capacity_mw: number;
-    investment_grade: string;
-    enhanced_score?: number;
-    proximity_bonus?: number;
-    county: string;
-    country: string;
-  };
-}
-```
-
-### MapOverlayControls.tsx (Infrastructure Controls)
-**Purpose:** Professional infrastructure layer toggles positioned as map overlays
-**Status:** Working but needs interface type corrections (icon: string -> React.ReactNode)
-**Styling:** Professional Lucide icons replacing emoji placeholders
-
-### MapLayerControls.tsx (Deprecated)
-**Issues:** 
-- Persona switching (renewable vs datacenter) adds confusion for MVP
-- Conceptual layers don't align with actual infrastructure data
-- Creates control duplication with MapOverlayControls
-**Recommendation:** Remove entirely for MVP simplicity
-
-### DataUploadPanel.tsx (Site Assessment)
-**Features:**
-- Interactive site builder with form validation
-- Two-site comparison capability  
-- Map coordinate placement integration
-- Real-time API scoring integration
-- Results visualization with scoring breakdown
-
-**Validation Rules:**
-```javascript
-{
-  capacity_mw: 5-500,           // MW range validation
-  latitude: 49.8-60.9,         // UK bounds only
-  longitude: -10.8-2.0,        // UK bounds only  
-  commissioning_year: 2025-2035, // Future projects
-  technology_type: ["Solar", "Wind", "Battery", "Hybrid"]
-}
-```
-
-## Data Fetching & Integration
-
-### Current Data Pipeline
-1. **fetch_gsp_boundaries.py**: NESO official GSP data (333 polygons)
-2. **fetch_fiber_data.py**: Telecommunications infrastructure via Overpass API  
-3. **fetch_network.py**: Additional network infrastructure aggregation
-4. **main.py**: Centralized API serving with batch optimization
-
-### Infrastructure Data Status
-- **Working**: GSP boundaries, fiber networks, substations, IXPs
-- **Issues**: Transmission lines endpoint timeouts (500 status codes)
-- **Performance**: 17+ seconds full dataset load, optimized with batch processing
-
-### Deployment Workflow  
-**Current Process:**
-1. Run data fetching scripts locally against production Supabase
-2. Deploy clean main.py (without admin endpoints) to Render
-3. Frontend connects to production API endpoints
-
-**Rationale:** Local data fetching avoids Render execution environment limitations and timeout issues
-
-## Current Development Status
-
-### Production Ready Features
-- Investment scoring algorithm with proximity calculations
-- Real-time site assessment API with validation
-- Professional map interface with project visualization  
-- Infrastructure data serving (most layers working)
-- UK-focused coordinate validation and bounds checking
-- Batch-optimized performance for multiple site scoring
-
-### Active Issues Requiring Resolution
-1. **TypeScript Interface Mismatches**: 
-   - MapOverlayControls icon prop type (string vs ReactNode)
-   - Infrastructure toggle handler parameter types
-2. **Infrastructure Visualization**: 
-   - Transmission endpoint 500 errors
-   - Layer compilation issues in frontend
-3. **Component Architecture**:
-   - Duplicate control systems (MapLayerControls vs MapOverlayControls)
-   - UI inconsistency between technical and investor interfaces
-
-### Not Yet Implemented
-- PDF report generation (placeholder toast notifications only)
-- Data center deployment recommendations based on scoring
-- Financial modeling integration for ROI calculations
-- Site data persistence (currently client-side session only)
-
-## Technical Debt & Optimization Opportunities
-
-### Frontend Performance
-- Map component re-renders can be optimized with useCallback dependencies
-- Infrastructure data loading should be lazy-loaded per layer
-- GeoJSON parsing could be moved to web workers for large datasets
-
-### Backend Optimizations  
-- Transmission lines endpoint needs query optimization or data pagination
-- Infrastructure endpoints could benefit from spatial indexing
-- Batch scoring algorithms already optimized (10-50x improvement achieved)
-
-### UI/UX Improvements for Investor Readiness
-- Replace technical jargon with investor-friendly language
-- Consolidate duplicate control interfaces
-- Implement professional styling consistent with shadcn/ui design system
-- Add empty states and loading indicators throughout
-
-## Environment Configuration
-
-### Required Environment Variables
-```bash
-# Database
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_ANON_KEY=your-anon-key
-
-# Mapping (Frontend)  
-MAPBOX_PUBLIC_TOKEN=pk.your-mapbox-token
-
-# API Configuration
-API_BASE_URL=https://infranodev2.onrender.com  # Production
-```
-
-### Development Dependencies
-```json
-{
-  "mapbox-gl": "^2.15.0",
-  "@supabase/supabase-js": "^2.38.0", 
-  "lucide-react": "^0.263.1",
-  "recharts": "^2.8.0",
-  "tailwindcss": "^3.3.0"
-}
-```
-
-## Testing & Quality Assurance
-
-### Verified Working Workflows
-1. **Site Assessment**: Form validation → coordinate placement → API scoring → results display
-2. **Project Visualization**: Database query → GeoJSON conversion → map rendering → popup interactions
-3. **Infrastructure Integration**: Layer toggling → API fetching → map overlay rendering
-4. **Investment Scoring**: Proximity calculation → exponential scoring → grade assignment
-
-### Known Performance Characteristics
-- **API Response Times**: <2s for individual site scoring, <5s for batch processing
-- **Map Rendering**: <1s for 100+ projects with clustering
-- **Infrastructure Loading**: 2-17s depending on layer complexity
-- **Database Query Performance**: Optimized with spatial indexing on coordinate fields
-
-## Next Development Priorities
-
-### Critical Path (MVP Completion)
-1. **Fix TypeScript Interface Issues**: Resolve compilation errors blocking infrastructure visualization
-2. **Consolidate Control Components**: Remove MapLayerControls, optimize MapOverlayControls positioning
-3. **Resolve Transmission Endpoint**: Debug 500 errors and implement proper error handling
-4. **Professional UI Polish**: Consistent Lucide icons, responsive layout, investor-appropriate terminology
-
-### Enhancement Phase  
-1. **PDF Export Implementation**: Professional reports with maps, scoring details, and investment recommendations
-2. **Data Center Recommendations**: AI-generated deployment suggestions based on infrastructure scoring
-3. **Advanced Financial Modeling**: ROI calculations incorporating proximity-based cost savings
-4. **Enhanced Visualization**: Heat maps, comparative analysis tools, custom styling options
-
-### Future Platform Development
-1. **Multi-Region Support**: Expand beyond UK boundaries to EU and other markets
-2. **Real-Time Data Integration**: Live grid pricing, capacity availability, planning application status
-3. **Collaboration Features**: Multi-user access, shared project workspaces, stakeholder reporting
-4. **Advanced Analytics**: Machine learning for development risk assessment, market trend analysis
-
-## Architectural Decisions & Rationale
-
-### Why Batch Processing Infrastructure Queries
-Individual proximity calculations were taking 30+ seconds per site. Batch processing loads all infrastructure once and processes multiple sites against cached data, achieving 10-50x performance improvements.
-
-### Why UK Geographic Bounds Only
-Initial market focus enables deeper infrastructure data integration and regulatory understanding. Expansion to other regions requires similar infrastructure dataset development and local market knowledge.
-
-### Why No Browser Storage APIs  
-Claude.ai artifact environment limitations prevent localStorage/sessionStorage usage. All state management uses React hooks with session-based persistence.
-
-### Why Exponential Distance Scoring
-Linear distance scoring doesn't reflect the dramatic cost differences between nearby vs. distant infrastructure. Exponential decay better models real-world infrastructure connection costs and development feasibility.
-
-This documentation reflects the current production state as of December 2024, including both working functionality and known issues requiring resolution.
-
-# Infranodal - Renewable Energy Investment Analysis Platform
 
 ## Project Overview
 Interactive web application enabling renewable energy investors and data center developers to assess site viability through AI-powered infrastructure scoring. The platform combines existing project databases with real-time infrastructure analysis, providing investment ratings from 1.0-10.0 based on persona-specific algorithms and comprehensive proximity scoring.
@@ -355,7 +36,7 @@ internet_exchange_points - Data center connectivity hubs
 water_resources - Water sources for cooling/operations
 ```
 
-## NEW: Persona-Based Investment Scoring (2.1 Algorithm)
+## Persona-Based Investment Scoring (2.1 Algorithm)
 
 ### Data Center Personas
 - **Hyperscaler**: High capacity focus (35% weight), reliable power (20%), quick deployment (25%)
@@ -412,6 +93,11 @@ water_resources - Water sources for cooling/operations
    - Basic access (>2) = 60 points
    - Air cooling sufficient = 40 points (baseline)
 
+### Distance Calculation Methods
+- Point-to-point: Haversine formula for accuracy
+- Point-to-line: Geometric shortest distance algorithms
+- Exponential decay: f(d) = s_max * e^(-4.6d/d_max) where d_max=100km
+
 ## API Endpoints (Production)
 
 ### Enhanced Scoring Endpoints
@@ -437,10 +123,16 @@ GET /api/infrastructure/ixp          # Internet Exchange Points
 GET /api/infrastructure/water        # Water resources
 ```
 
-## Component Architecture Updates
+### Health & Diagnostics
+```http
+GET /health                          # System health check
+GET /                               # API status and version
+```
+
+## Component Architecture
 
 ### DynamicSiteMap.tsx (UPDATED - Fixed Interface Issues)
-**Current State**: ✅ Working with new 1.0-10.0 rating system
+**Current State**: Working with new 1.0-10.0 rating system
 **Responsibilities:**
 - Mapbox GL integration with UK/Ireland region switching
 - Project visualization with investment rating color coding (1.0-10.0 scale)
@@ -470,7 +162,7 @@ interface Project {
 }
 ```
 
-### NEW: AI Project Analysis Component
+### AI Project Analysis Component
 **AIProjectAnalysis.tsx**: 
 - Persona-specific suitability scoring for individual projects
 - AI-generated strengths, concerns, and recommendations
@@ -482,7 +174,7 @@ interface Project {
 - Map popups (analyze this project link)
 - Chatbot context (project-aware conversations)
 
-### PersonaSelector.tsx (NEW)
+### PersonaSelector.tsx
 **Purpose**: Data center persona selection and explanation interface
 **Features**:
 - Visual persona comparison with weightings
@@ -497,9 +189,27 @@ interface Project {
 - Integration with location-based context
 - Professional renewable energy domain knowledge
 
-## Data Center Persona Integration
+### DataUploadPanel.tsx (Site Assessment)
+**Features:**
+- Interactive site builder with form validation
+- Two-site comparison capability  
+- Map coordinate placement integration
+- Real-time API scoring integration with persona selection
+- Results visualization with scoring breakdown
 
-### Persona Weightings
+**Validation Rules:**
+```javascript
+{
+  capacity_mw: 5-500,           // MW range validation
+  latitude: 49.8-60.9,         // UK bounds only
+  longitude: -10.8-2.0,        // UK bounds only  
+  commissioning_year: 2025-2035, // Future projects
+  technology_type: ["Solar", "Wind", "Battery", "Hybrid"]
+}
+```
+
+## Persona Weightings Configuration
+
 ```python
 PERSONA_WEIGHTS = {
     "hyperscaler": {
@@ -529,13 +239,7 @@ PERSONA_WEIGHTS = {
 }
 ```
 
-### AI Analysis Integration
-Projects can now be analyzed through multiple lenses:
-1. **Traditional Renewable Scoring**: Capacity + stage + technology focus
-2. **Persona-Specific Scoring**: Weighted by data center requirements
-3. **AI Comparative Analysis**: Strengths/concerns for each persona type
-
-## Frontend Optimization (NEW)
+## Frontend Optimization
 
 ### UI Component Cleanup
 **Removed 20+ unused shadcn/ui components** for better performance:
@@ -555,13 +259,13 @@ Projects can now be analyzed through multiple lenses:
 
 ## Current Development Status
 
-### ✅ Recently Fixed
+### Recently Fixed
 1. **Backend-Frontend Mismatch**: Updated infranodev2 backend to return `investment_rating` + `rating_description` instead of old `enhanced_score` + `investment_grade` system
 2. **TypeScript Interface Issues**: Fixed Project interface to match new 1.0-10.0 rating system
 3. **Persona Integration**: Complete persona-based scoring implementation
 4. **UI Component Bloat**: Removed 20+ unused components
 
-### ✅ Production Ready Features  
+### Production Ready Features  
 - Persona-based investment scoring (1.0-10.0 scale)
 - Real-time site assessment with persona selection
 - Professional map interface with region switching (UK/Ireland)
@@ -569,18 +273,39 @@ Projects can now be analyzed through multiple lenses:
 - AI-powered project analysis (ready for integration)
 - Batch-optimized performance for multiple site scoring
 
-### 🔄 Active Development
+### Active Development
 1. **AI Integration**: Supabase Edge Function for `analyze-project-personas`
 2. **Enhanced Chat**: Project-context awareness in AI conversations  
 3. **Professional UI**: Investor-appropriate terminology and styling
 4. **Advanced Analytics**: Persona comparison reports
 
-### ⏳ Planned Features
+### Planned Features
 - PDF report generation with persona-specific insights
 - Advanced financial modeling with persona-weighted ROI
 - Multi-region expansion beyond UK/Ireland
 - Real-time infrastructure data feeds
 - Collaborative workspace features
+
+## Data Fetching & Integration
+
+### Current Data Pipeline
+1. **fetch_gsp_boundaries.py**: NESO official GSP data (333 polygons)
+2. **fetch_fiber_data.py**: Telecommunications infrastructure via Overpass API  
+3. **fetch_network.py**: Additional network infrastructure aggregation
+4. **main.py**: Centralized API serving with batch optimization
+
+### Infrastructure Data Status
+- **Working**: GSP boundaries, fiber networks, substations, IXPs
+- **Issues**: Transmission lines endpoint timeouts (500 status codes)
+- **Performance**: 17+ seconds full dataset load, optimized with batch processing
+
+### Deployment Workflow  
+**Current Process:**
+1. Run data fetching scripts locally against production Supabase
+2. Deploy clean main.py (without admin endpoints) to Render
+3. Frontend connects to production API endpoints
+
+**Rationale:** Local data fetching avoids Render execution environment limitations and timeout issues
 
 ## Technical Architecture Decisions
 
@@ -605,19 +330,17 @@ Persona-based scoring provides quantitative analysis, but investors need qualita
 - **Opportunity Identification**: Suggests optimization strategies
 - **Comparative Intelligence**: Explains trade-offs between persona approaches
 
-## Next Development Priorities
+### Why Batch Processing Infrastructure Queries
+Individual proximity calculations were taking 30+ seconds per site. Batch processing loads all infrastructure once and processes multiple sites against cached data, achieving 10-50x performance improvements.
 
-### Critical Path (Q1 2024)
-1. **Complete AI Integration**: Deploy Supabase Edge Functions for persona analysis
-2. **Enhanced User Experience**: Professional styling and terminology refinement
-3. **Advanced Analytics**: Comparative persona analysis and reporting
-4. **Performance Optimization**: Further map rendering and data loading improvements
+### Why UK Geographic Bounds Only
+Initial market focus enables deeper infrastructure data integration and regulatory understanding. Expansion to other regions requires similar infrastructure dataset development and local market knowledge.
 
-### Growth Phase (Q2 2024)
-1. **Financial Modeling**: ROI calculations with persona-specific cost models
-2. **Advanced Visualization**: Heat maps, trend analysis, market intelligence
-3. **Collaboration Features**: Multi-user access, shared analysis, stakeholder reports
-4. **Regional Expansion**: EU market data integration
+### Why No Browser Storage APIs  
+Claude.ai artifact environment limitations prevent localStorage/sessionStorage usage. All state management uses React hooks with session-based persistence.
+
+### Why Exponential Distance Scoring
+Linear distance scoring doesn't reflect the dramatic cost differences between nearby vs. distant infrastructure. Exponential decay better models real-world infrastructure connection costs and development feasibility.
 
 ## Environment Configuration
 
@@ -649,7 +372,7 @@ OPENAI_API_KEY=your-openai-key  # For Supabase Edge Functions
 }
 ```
 
-## API Response Format (NEW)
+## API Response Format
 
 ### Enhanced Project Response
 ```json
@@ -702,4 +425,322 @@ OPENAI_API_KEY=your-openai-key  # For Supabase Edge Functions
 }
 ```
 
+## Testing & Quality Assurance
+
+### Verified Working Workflows
+1. **Site Assessment**: Form validation → persona selection → coordinate placement → API scoring → results display
+2. **Project Visualization**: Database query → GeoJSON conversion → map rendering → popup interactions
+3. **Infrastructure Integration**: Layer toggling → API fetching → map overlay rendering
+4. **Persona-based Scoring**: Component calculation → weight application → rating conversion → display
+
+### Known Performance Characteristics
+- **API Response Times**: <2s for individual site scoring, <5s for batch processing
+- **Map Rendering**: <1s for 100+ projects with clustering
+- **Infrastructure Loading**: 2-17s depending on layer complexity
+- **Database Query Performance**: Optimized with spatial indexing on coordinate fields
+
+## Next Development Priorities
+
+### Critical Path (Q1 2025)
+1. **Complete AI Integration**: Deploy Supabase Edge Functions for persona analysis
+2. **Enhanced User Experience**: Professional styling and terminology refinement
+3. **Advanced Analytics**: Comparative persona analysis and reporting
+4. **Performance Optimization**: Further map rendering and data loading improvements
+
+### Growth Phase (Q2 2025)
+1. **Financial Modeling**: ROI calculations with persona-specific cost models
+2. **Advanced Visualization**: Heat maps, trend analysis, market intelligence
+3. **Collaboration Features**: Multi-user access, shared analysis, stakeholder reports
+4. **Regional Expansion**: EU market data integration
+
+### Future Platform Development
+1. **Multi-Region Support**: Expand beyond UK boundaries to EU and other markets
+2. **Real-Time Data Integration**: Live grid pricing, capacity availability, planning application status
+3. **Collaboration Features**: Multi-user access, shared project workspaces, stakeholder reporting
+4. **Advanced Analytics**: Machine learning for development risk assessment, market trend analysis
+
 This documentation reflects the current production state as of September 2025, including the new persona-based scoring system, AI integration capabilities, and recent frontend optimizations.
+
+# Infranodal Platform - Development Roadmap & Next Steps
+
+## Immediate Priorities (Next 2-4 Weeks)
+
+### 1. Complete AI Integration
+**Status**: Backend ready, frontend components built, need deployment
+**Task**: Deploy Supabase Edge Function for persona analysis
+**Steps**:
+```sql
+-- Create Supabase Edge Function
+CREATE FUNCTION analyze_project_personas(
+  project_data JSONB,
+  personas TEXT[]
+) RETURNS JSONB;
+```
+**Implementation**:
+- Set up OpenAI/Claude API keys in Supabase environment
+- Deploy the `AIProjectAnalysis` component integration
+- Test persona-specific analysis responses
+- Add error handling and fallback responses
+
+**Business Impact**: Enable AI-powered investment insights, differentiate from competitors
+**Technical Risk**: Medium (API rate limits, response quality)
+
+### 2. Production UI Polish
+**Status**: Core functionality works, needs investor-grade presentation
+**Tasks**:
+- Replace any remaining technical jargon with investment terminology
+- Implement consistent loading states across all components
+- Add empty states for data-loading scenarios
+- Ensure responsive design works on tablets/mobile
+
+**Components to Polish**:
+- Project popup design (make more professional)
+- Infrastructure layer controls (better visual hierarchy)
+- Persona selector (add educational tooltips)
+- Filter controls (cleaner layout)
+
+**Business Impact**: Professional appearance increases user trust and adoption
+**Technical Risk**: Low
+
+### 3. Fix Infrastructure Data Issues
+**Status**: 5/6 layers working, transmission lines timing out
+**Tasks**:
+- Debug transmission lines endpoint (500 errors)
+- Implement pagination or data chunking for large datasets
+- Add retry logic for failed infrastructure requests
+- Consider data caching strategy
+
+**Implementation**:
+```python
+# Add to main.py
+@app.get("/api/infrastructure/transmission")
+async def get_transmission_lines(
+    limit: int = Query(100, description="Limit results for performance"),
+    offset: int = Query(0, description="Pagination offset")
+):
+    # Implement chunked loading
+```
+
+**Business Impact**: Complete infrastructure visualization builds user confidence
+**Technical Risk**: Medium (database optimization required)
+
+## Short Term (1-2 Months)
+
+### 4. Enhanced Persona Analytics
+**Status**: Basic scoring implemented, need comparative analysis
+**Tasks**:
+- Build persona comparison dashboard
+- Add "Why this rating?" explanations
+- Implement site ranking/filtering by persona suitability
+- Create persona-specific project recommendations
+
+**New Components**:
+- `PersonaComparisonChart.tsx` - side-by-side persona scoring
+- `ProjectRecommendations.tsx` - AI-suggested next steps
+- Enhanced filtering by persona ratings
+
+**Business Impact**: Deeper insights drive user engagement and decision-making
+**Technical Risk**: Low (frontend-heavy development)
+
+### 5. PDF Report Generation
+**Status**: Toast placeholders exist, need actual implementation
+**Tasks**:
+- Choose PDF generation library (jsPDF vs Puppeteer)
+- Design professional report templates
+- Include maps, scoring breakdowns, AI insights
+- Add persona-specific report sections
+
+**Report Sections**:
+- Executive Summary with key metrics
+- Map visualization with project locations
+- Detailed scoring breakdown by persona
+- AI-generated recommendations and risk assessment
+- Appendix with methodology and data sources
+
+**Business Impact**: Professional reports enable stakeholder sharing and decision documentation
+**Technical Risk**: Medium (PDF generation complexity, large file handling)
+
+### 6. Advanced Search & Filtering
+**Status**: Basic filtering exists, need sophisticated discovery
+**Tasks**:
+- Implement advanced search (site name, operator, location)
+- Add saved search/filter combinations
+- Build "Find Similar Projects" functionality
+- Implement geographic search (within X km of location)
+
+**Business Impact**: Improved project discovery increases platform utility
+**Technical Risk**: Low
+
+## Medium Term (2-4 Months)
+
+### 7. Financial Modeling Integration
+**Status**: Investment scoring exists, need ROI calculations
+**Tasks**:
+- Build cost modeling based on infrastructure proximity
+- Add deployment timeline estimates by persona
+- Implement break-even analysis tools
+- Create sensitivity analysis for key variables
+
+**Financial Models**:
+- **Grid Connection Costs**: Distance-based CAPEX modeling
+- **Deployment Timeline**: Persona-specific construction schedules  
+- **Operational Savings**: Proximity-based OPEX reductions
+- **Risk Premiums**: Development stage and location risk factors
+
+**Business Impact**: Financial analysis tools support investment decision-making
+**Technical Risk**: High (requires domain expertise, accurate cost data)
+
+### 8. Multi-Region Expansion
+**Status**: UK/Ireland only, architecture supports expansion
+**Tasks**:
+- Research EU infrastructure data sources
+- Adapt scoring algorithms for different regulatory environments
+- Build region-specific validation rules
+- Implement multi-currency support
+
+**Priority Regions**:
+1. **Netherlands/Belgium**: Strong data center markets
+2. **Germany**: Large renewable energy sector
+3. **Nordics**: Renewable energy leadership, cooling advantages
+
+**Business Impact**: Market expansion increases addressable opportunity
+**Technical Risk**: High (data acquisition, regulatory complexity)
+
+### 9. Collaborative Features
+**Status**: Single-user focused, need team functionality
+**Tasks**:
+- Add user authentication and profiles
+- Implement project sharing and commenting
+- Build team workspaces
+- Add revision history for analysis
+
+**Business Impact**: Team collaboration increases enterprise adoption
+**Technical Risk**: Medium (authentication, data security)
+
+## Long Term (6+ Months)
+
+### 10. Real-Time Data Integration
+**Status**: Static datasets, need live data feeds
+**Tasks**:
+- Integrate with grid operators for real-time capacity data
+- Add planning application status tracking
+- Implement energy price feeds
+- Build automated data refresh pipelines
+
+**Data Sources**:
+- **National Grid ESO**: Real-time grid constraints
+- **Planning Portals**: Application status updates  
+- **Energy Markets**: Spot and forward pricing
+- **Weather APIs**: Generation forecasting
+
+**Business Impact**: Real-time data provides competitive advantage
+**Technical Risk**: Very High (API reliability, data costs, integration complexity)
+
+### 11. Machine Learning Enhancement
+**Status**: Rule-based scoring, ready for ML augmentation
+**Tasks**:
+- Build predictive models for development success rates
+- Implement anomaly detection for unusual scoring patterns
+- Add market trend analysis and forecasting
+- Create recommendation engines for site optimization
+
+**ML Applications**:
+- **Risk Scoring**: Historical success rates by project characteristics
+- **Market Analysis**: Trend detection in regional development patterns
+- **Optimization**: Suggest site modifications to improve scores
+- **Competitive Intelligence**: Track market activity patterns
+
+**Business Impact**: Predictive insights create significant user value
+**Technical Risk**: Very High (data quality, model accuracy, computational costs)
+
+### 12. Mobile Application
+**Status**: Responsive web app, consider native mobile
+**Tasks**:
+- Evaluate React Native vs native development
+- Design mobile-first user workflows
+- Implement offline functionality for field use
+- Add location-based features (GPS integration)
+
+**Mobile-Specific Features**:
+- **Field Assessment**: On-site project evaluation tools
+- **Offline Maps**: Cached map data for remote locations
+- **Photo Integration**: Site documentation and sharing
+- **Push Notifications**: Project updates and alerts
+
+**Business Impact**: Mobile access increases usage frequency and field utility
+**Technical Risk**: High (development complexity, platform maintenance)
+
+## Resource Requirements
+
+### Development Team Structure
+**Current Need**: 2-3 developers for next 6 months
+- **Full-Stack Developer** (React/Python): UI polish, feature development
+- **Data Engineer**: Infrastructure data pipeline optimization
+- **AI/ML Engineer** (part-time): AI integration and enhancement
+
+### Technology Investments
+**Immediate**:
+- Supabase Edge Functions ($20-50/month)
+- Enhanced AI API usage ($100-300/month)
+- PDF generation service or compute resources
+
+**Medium Term**:
+- Real-time data subscriptions ($500-2000/month)
+- Enhanced mapping services (Mapbox Pro tier)
+- Cloud compute scaling (batch processing optimization)
+
+### Success Metrics
+**User Engagement**:
+- Session duration >10 minutes (current: ~6 minutes)
+- Projects analyzed per session >3 (current: ~2)
+- Return user rate >40% (need to implement tracking)
+
+**Business Metrics**:
+- User acquisition rate
+- Premium feature adoption (reports, advanced analysis)
+- Customer feedback scores (implement NPS tracking)
+
+**Technical Metrics**:
+- API response time <2s (currently achieved)
+- Map loading time <3s (currently ~5s)
+- Error rate <1% (need monitoring)
+
+## Risk Assessment & Mitigation
+
+### High-Risk Items
+1. **Real-Time Data Integration**: Partner reliability, cost scaling
+   - *Mitigation*: Start with single data source, build incrementally
+2. **Financial Modeling Accuracy**: Domain expertise requirements
+   - *Mitigation*: Partner with industry consultants, validate with users
+3. **Multi-Region Expansion**: Regulatory and data complexity
+   - *Mitigation*: Focus on single region expansion first
+
+### Medium-Risk Items
+1. **AI Integration Quality**: Response accuracy and relevance
+   - *Mitigation*: Implement user feedback loops, fallback responses
+2. **Infrastructure Data Reliability**: Third-party API dependencies
+   - *Mitigation*: Build data caching, multiple source redundancy
+
+### Low-Risk Items
+1. **UI Improvements**: Incremental enhancement
+2. **PDF Generation**: Well-established technical solutions
+3. **Search Enhancement**: Standard web application features
+
+## Decision Points
+
+### Next 30 Days
+- **AI Provider Selection**: OpenAI vs Anthropic vs local models
+- **PDF Generation Approach**: Client-side vs server-side rendering
+- **Infrastructure Data Strategy**: Fix current issues vs rebuild pipeline
+
+### Next 90 Days  
+- **Regional Expansion Priority**: Which market to tackle first
+- **Monetization Strategy**: Freemium vs enterprise-first approach
+- **Team Expansion**: When to hire additional developers
+
+### Next 6 Months
+- **Platform Architecture**: Maintain current stack vs major upgrades
+- **Data Strategy**: Continue manual curation vs automated pipelines
+- **Business Model**: SaaS subscription vs transaction-based pricing
+
+This roadmap balances immediate user value delivery with long-term platform capability building, while managing technical risk and resource constraints.
