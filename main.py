@@ -5,8 +5,10 @@ import httpx
 import os
 from dotenv import load_dotenv
 from pydantic import BaseModel
+import json
+import time
+from math import radians, sin, cos, asin, sqrt
 
-PersonaType = Literal["hyperscaler", "colocation", "edge_computing"]
 load_dotenv()
 
 app = FastAPI(title="Infranodal API", version="2.1.0")
@@ -19,38 +21,40 @@ SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
 print(f"✅ SUPABASE_URL: {SUPABASE_URL}")
 print(f"✅ SUPABASE_KEY exists: {bool(SUPABASE_KEY)}")
 
+# Define persona types
+PersonaType = Literal["hyperscaler", "colocation", "edge_computing"]
+
 # Persona weight definitions
 PERSONA_WEIGHTS = {
     "hyperscaler": {
-        "capacity": 0.40,
-        "grid": 0.30, 
-        "fiber": 0.20,
-        "water": 0.05,
-        "stage": 0.05
+        "capacity": 0.35,              # High capacity critical for large deployments
+        "development_stage": 0.25,     # Operational sites preferred for quick deployment
+        "technology": 0.10,            # Technology type less critical
+        "grid_infrastructure": 0.20,   # Reliable power essential
+        "digital_infrastructure": 0.05, # Fiber important but not critical
+        "water_resources": 0.05        # Water for cooling systems
     },
+    
     "colocation": {
-        "capacity": 0.15,
-        "grid": 0.25,
-        "fiber": 0.40,
-        "water": 0.10,
-        "stage": 0.10
+        "capacity": 0.15,              # Smaller capacity needs
+        "development_stage": 0.20,     # Flexible on development stage
+        "technology": 0.10,            # Technology type flexible
+        "grid_infrastructure": 0.25,   # Power reliability critical
+        "digital_infrastructure": 0.25, # Connectivity is key for colocation
+        "water_resources": 0.05        # Basic cooling needs
     },
-    "ai_hpc": {
-        "capacity": 0.30,
-        "grid": 0.30,
-        "fiber": 0.10,
-        "water": 0.20,
-        "stage": 0.10
+    
+    "edge_computing": {
+        "capacity": 0.10,              # Small capacity requirements
+        "development_stage": 0.30,     # Quick deployment critical
+        "technology": 0.15,            # Technology flexibility important
+        "grid_infrastructure": 0.15,   # Moderate power needs
+        "digital_infrastructure": 0.25, # Low latency connectivity critical
+        "water_resources": 0.05        # Minimal cooling needs
     }
 }
 
-# Calculate maximum possible scores per persona
-PERSONA_MAX_SCORES = {
-    "hyperscaler": (40 * 0.40) + (100 * 0.30) + (20 * 0.20) + (15 * 0.05) + (40 * 0.05),  # 52.75
-    "colocation": (40 * 0.15) + (100 * 0.25) + (20 * 0.40) + (15 * 0.10) + (40 * 0.10),   # 44.5
-    "ai_hpc": (40 * 0.30) + (100 * 0.30) + (20 * 0.10) + (15 * 0.20) + (40 * 0.10)        # 49.0
-}
-# NEW: User site data model
+# User site data model
 class UserSite(BaseModel):
     site_name: str
     technology_type: str
@@ -68,186 +72,7 @@ async def query_supabase(endpoint: str):
             return response.json()
         raise HTTPException(500, f"Database error: {response.status_code}")
 
-def calculate_score(project: Dict) -> Dict:
-    score = 0
-    capacity = project.get('capacity_mw', 0) or 0
-    status = str(project.get('development_status_short', '')).lower()
-    tech = str(project.get('technology_type', '')).lower()
-    
-    if capacity >= 100: score += 40
-    elif capacity >= 50: score += 30
-    elif capacity >= 20: score += 20
-    else: score += 10
-    
-    if 'operational' in status: score += 40
-    elif 'construction' in status: score += 35
-    elif 'granted' in status: score += 30
-    elif 'submitted' in status: score += 20
-    else: score += 10
-    
-    if 'solar' in tech: score += 20
-    elif 'battery' in tech: score += 18
-    else: score += 15
-    
-    if score >= 80: grade, color = "A+", "#00FF00"
-    elif score >= 70: grade, color = "A", "#7FFF00"
-    elif score >= 60: grade, color = "B+", "#FFFF00"
-    elif score >= 50: grade, color = "B", "#FFA500"
-    elif score >= 40: grade, color = "C", "#FF4500"
-    else: grade, color = "D", "#FF0000"
-    
-    return {"investment_score": score, "investment_grade": grade, "color_code": color}
-def get_color_from_score(score: float) -> str:
-    """Map 0-10 score to color code"""
-    if score >= 9.0: return "#00DD00"      # Dark Green
-    elif score >= 7.5: return "#7FFF00"   # Light Green  
-    elif score >= 6.0: return "#FFFF00"   # Yellow
-    elif score >= 4.0: return "#FFA500"   # Orange
-    else: return "#FF0000"                 # Red
-
-def calculate_component_scores(project: Dict, proximity_scores: Dict) -> Dict:
-    """Calculate individual component scores for persona weighting"""
-    
-    # Capacity score (0-40)
-    capacity = project.get('capacity_mw', 0) or 0
-    if capacity >= 100: capacity_score = 40
-    elif capacity >= 50: capacity_score = 30
-    elif capacity >= 20: capacity_score = 20
-    else: capacity_score = 10
-    
-    # Development stage score (0-40)
-    status = str(project.get('development_status_short', '')).lower()
-    if 'operational' in status: stage_score = 40
-    elif 'construction' in status: stage_score = 35
-    elif 'granted' in status: stage_score = 30
-    elif 'submitted' in status: stage_score = 20
-    else: stage_score = 10
-    
-    # Technology score (0-20) - kept for potential future use
-    tech = str(project.get('technology_type', '')).lower()
-    if 'solar' in tech: tech_score = 20
-    elif 'battery' in tech: tech_score = 18
-    else: tech_score = 15
-    
-    # Grid infrastructure score (substations + transmission, 0-100)
-    grid_score = proximity_scores.get('substation_score', 0) + proximity_scores.get('transmission_score', 0)
-    
-    # Fiber score (0-20)
-    fiber_score = proximity_scores.get('fiber_score', 0)
-    
-    # Water score (0-15)  
-    water_score = proximity_scores.get('water_score', 0)
-    
-    return {
-        "capacity": capacity_score,
-        "stage": stage_score,
-        "technology": tech_score,
-        "grid": grid_score,
-        "fiber": fiber_score,
-        "water": water_score
-    }
-
-def calculate_persona_scores(component_scores: Dict) -> Dict:
-    """Calculate weighted scores for each persona"""
-    
-    personas = {}
-    
-    for persona_name, weights in PERSONA_WEIGHTS.items():
-        # Calculate weighted score
-        weighted_score = (
-            component_scores["capacity"] * weights["capacity"] +
-            component_scores["grid"] * weights["grid"] +
-            component_scores["fiber"] * weights["fiber"] +
-            component_scores["water"] * weights["water"] +
-            component_scores["stage"] * weights["stage"]
-        )
-        
-        # Normalize to 0-10 scale
-        max_possible = PERSONA_MAX_SCORES[persona_name]
-        normalized_score = (weighted_score / max_possible) * 10
-        normalized_score = round(min(10.0, max(0.0, normalized_score)), 1)
-        
-        # Get color
-        color = get_color_from_score(normalized_score)
-        
-        personas[persona_name] = {
-            "score": normalized_score,
-            "color": color,
-            "weighted_score": round(weighted_score, 1),
-            "max_possible": round(max_possible, 1)
-        }
-    
-    return personas
-@app.get("/")
-async def root():
-    return {"message": "Infranodal API v2.0", "status": "active"}
-
-@app.get("/health")
-async def health():
-    try:
-        print("🔄 Testing database connection...")
-        data = await query_supabase("renewable_projects?select=count")
-        count = len(data)
-        print(f"✅ Database connected: {count} records")
-        return {"status": "healthy", "database": "connected", "projects": count}
-    except Exception as e:
-        print(f"❌ Database error: {e}")
-        return {"status": "degraded", "database": "disconnected", "error": str(e)}
-
-@app.get("/api/projects")
-async def get_projects(
-    limit: int = Query(100), 
-    technology: Optional[str] = None,
-    country: Optional[str] = None
-):
-    query_parts = ["renewable_projects?select=*"]
-    filters = []
-    
-    if technology: filters.append(f"technology_type.ilike.%{technology}%")
-    if country: filters.append(f"country.ilike.%{country}%")
-    if filters: query_parts.append("&".join(filters))
-    query_parts.append(f"limit={limit}")
-    
-    projects = await query_supabase("&".join(query_parts))
-    
-    for project in projects:
-        project.update(calculate_score(project))
-    
-    return projects
-
-@app.get("/api/projects/geojson")
-async def get_geojson():
-    projects = await query_supabase("renewable_projects?select=*&limit=500")
-    features = []
-    
-    for project in projects:
-        if not project.get('longitude') or not project.get('latitude'):
-            continue
-        
-        project.update(calculate_score(project))
-        features.append({
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": [project['longitude'], project['latitude']]},
-            "properties": {
-                "ref_id": project['ref_id'],
-                "site_name": project['site_name'],
-                "technology_type": project['technology_type'],
-                "operator": project.get('operator'),
-                "capacity_mw": project.get('capacity_mw'),
-                "county": project.get('county'),
-                "investment_score": project['investment_score'],
-                "investment_grade": project['investment_grade'],
-                "color_code": project['color_code']
-            }
-        })
-    
-    return {"type": "FeatureCollection", "features": features}
-
-# SCORING ALGORITHM - OPTIMIZED VERSION
-import json
-import time
-from math import radians, sin, cos, asin, sqrt
-from typing import Dict, List, Tuple, Optional
+# ==================== DISTANCE CALCULATIONS ====================
 
 def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Calculate distance between two points on Earth in kilometers"""
@@ -293,7 +118,319 @@ def point_to_line_segment_distance(px: float, py: float, x1: float, y1: float, x
     
     return haversine(px, py, closest_x, closest_y)
 
-# OPTIMIZED: Load infrastructure once, score multiple projects
+# ==================== COLOR AND DESCRIPTION FUNCTIONS ====================
+
+def get_color_from_score(score_out_of_100: float) -> str:
+    """Map 10-100 internal score to color code (displayed as 1.0-10.0)"""
+    # Convert to display scale for color mapping
+    display_score = score_out_of_100 / 10.0
+    
+    if display_score >= 9.0: return "#00DD00"      # Excellent - Dark Green
+    elif display_score >= 8.0: return "#33FF33"   # Very Good - Bright Green  
+    elif display_score >= 7.0: return "#7FFF00"   # Good - Light Green
+    elif display_score >= 6.0: return "#CCFF00"   # Above Average - Yellow-Green
+    elif display_score >= 5.0: return "#FFFF00"   # Average - Yellow
+    elif display_score >= 4.0: return "#FFCC00"   # Below Average - Orange-Yellow
+    elif display_score >= 3.0: return "#FF9900"   # Poor - Orange
+    elif display_score >= 2.0: return "#FF6600"   # Very Poor - Red-Orange
+    elif display_score >= 1.0: return "#FF3300"   # Bad - Red
+    else: return "#CC0000"                         # Very Bad - Dark Red
+
+def get_rating_description(score_out_of_100: float) -> str:
+    """Get descriptive rating for 10-100 internal score (displayed as 1.0-10.0)"""
+    # Convert to display scale for description
+    display_score = score_out_of_100 / 10.0
+    
+    if display_score >= 9.0: return "Excellent"
+    elif display_score >= 8.0: return "Very Good"
+    elif display_score >= 7.0: return "Good"
+    elif display_score >= 6.0: return "Above Average"
+    elif display_score >= 5.0: return "Average"
+    elif display_score >= 4.0: return "Below Average"
+    elif display_score >= 3.0: return "Poor"
+    elif display_score >= 2.0: return "Very Poor"
+    elif display_score >= 1.0: return "Bad"
+    else: return "Very Bad"
+
+# ==================== COMPONENT SCORING FUNCTIONS ====================
+
+def calculate_capacity_component_score(capacity_mw: float) -> float:
+    """Score capacity on 10-100 scale based on data center requirements"""
+    if capacity_mw >= 100: return 100.0      # Hyperscale requirements
+    elif capacity_mw >= 50: return 85.0      # Large enterprise
+    elif capacity_mw >= 25: return 70.0      # Medium enterprise  
+    elif capacity_mw >= 10: return 55.0      # Small enterprise
+    elif capacity_mw >= 5: return 40.0       # Edge computing
+    elif capacity_mw >= 1: return 25.0       # Micro edge
+    else: return 10.0                        # Too small
+
+def calculate_development_stage_score(status: str) -> float:
+    """Score development stage on 10-100 scale"""
+    status = str(status).lower()
+    if 'operational' in status: return 100.0         # Immediate deployment
+    elif 'construction' in status: return 85.0       # Near-term deployment
+    elif 'granted' in status: return 70.0           # Planning approved
+    elif 'submitted' in status: return 45.0         # Planning pending
+    elif 'planning' in status: return 25.0          # Early stage
+    else: return 10.0                               # Unknown/conceptual
+
+def calculate_technology_score(tech_type: str) -> float:
+    """Score technology type on 10-100 scale for data center suitability"""
+    tech = str(tech_type).lower()
+    if 'solar' in tech: return 90.0          # Clean, predictable power
+    elif 'battery' in tech: return 95.0      # Grid stability, peak shaving
+    elif 'wind' in tech: return 75.0         # Variable but clean
+    elif 'hybrid' in tech: return 85.0       # Balanced approach
+    else: return 60.0                        # Other technologies
+
+def calculate_grid_infrastructure_score(proximity_scores: Dict) -> float:
+    """Score grid infrastructure access on 10-100 scale"""
+    substation_score = proximity_scores.get('substation_score', 0)
+    transmission_score = proximity_scores.get('transmission_score', 0)
+    
+    # Convert exponential proximity scores to 10-100 scale
+    grid_score = 10.0  # Base score
+    
+    # Substations (primary connection)
+    if substation_score > 40: grid_score += 45.0      # Excellent proximity
+    elif substation_score > 25: grid_score += 30.0    # Good proximity
+    elif substation_score > 10: grid_score += 15.0    # Moderate proximity
+    
+    # Transmission lines (backup/alternative)
+    if transmission_score > 30: grid_score += 30.0    # Direct line access
+    elif transmission_score > 15: grid_score += 15.0  # Near transmission
+    
+    return min(100.0, grid_score)
+
+def calculate_digital_infrastructure_score(proximity_scores: Dict) -> float:
+    """Score digital connectivity on 10-100 scale"""
+    fiber_score = proximity_scores.get('fiber_score', 0)
+    ixp_score = proximity_scores.get('ixp_score', 0)
+    
+    digital_score = 10.0  # Base score
+    
+    # Fiber optic networks
+    if fiber_score > 15: digital_score += 40.0        # Excellent fiber access
+    elif fiber_score > 8: digital_score += 25.0       # Good fiber access
+    elif fiber_score > 3: digital_score += 10.0       # Basic fiber access
+    
+    # Internet Exchange Points
+    if ixp_score > 8: digital_score += 35.0           # Near major IXP
+    elif ixp_score > 4: digital_score += 20.0         # Regional IXP access
+    elif ixp_score > 1: digital_score += 10.0         # Basic IXP access
+    
+    return min(100.0, digital_score)
+
+def calculate_water_resources_score(proximity_scores: Dict) -> float:
+    """Score water resources access on 10-100 scale"""
+    water_score = proximity_scores.get('water_score', 0)
+    
+    base_score = 40.0  # Base score (many sites don't need water cooling)
+    
+    if water_score > 10: return 100.0        # Excellent water access
+    elif water_score > 5: return 80.0        # Good water access
+    elif water_score > 2: return 60.0        # Basic water access
+    else: return base_score                   # Air cooling sufficient
+
+# ==================== PERSONA-BASED SCORING ====================
+
+def calculate_persona_weighted_score(
+    project: Dict, 
+    proximity_scores: Dict, 
+    persona: PersonaType = "hyperscaler"
+) -> Dict:
+    """
+    Calculate investment rating based on persona-specific weightings
+    
+    Returns scores on 10-100 internal scale, displayed as 1.0-10.0
+    """
+    
+    weights = PERSONA_WEIGHTS[persona]
+    
+    # Calculate component scores (10-100 scale)
+    capacity_score = calculate_capacity_component_score(project.get('capacity_mw', 0))
+    stage_score = calculate_development_stage_score(project.get('development_status_short', ''))
+    tech_score = calculate_technology_score(project.get('technology_type', ''))
+    grid_score = calculate_grid_infrastructure_score(proximity_scores)
+    digital_score = calculate_digital_infrastructure_score(proximity_scores)
+    water_score = calculate_water_resources_score(proximity_scores)
+    
+    # Apply persona-specific weights
+    weighted_score = (
+        capacity_score * weights["capacity"] +
+        stage_score * weights["development_stage"] +
+        tech_score * weights["technology"] +
+        grid_score * weights["grid_infrastructure"] +
+        digital_score * weights["digital_infrastructure"] +
+        water_score * weights["water_resources"]
+    )
+    
+    # Ensure score stays within 10-100 range
+    final_internal_score = min(100.0, max(10.0, weighted_score))
+    
+    # Convert to display scale (1.0-10.0)
+    display_rating = final_internal_score / 10.0
+    
+    # Get color and description
+    color = get_color_from_score(final_internal_score)
+    description = get_rating_description(final_internal_score)
+    
+    return {
+        # Display scores
+        "investment_rating": round(display_rating, 1),
+        "rating_description": description,
+        "color_code": color,
+        
+        # Component breakdown for transparency
+        "component_scores": {
+            "capacity": round(capacity_score, 1),
+            "development_stage": round(stage_score, 1),
+            "technology": round(tech_score, 1),
+            "grid_infrastructure": round(grid_score, 1),
+            "digital_infrastructure": round(digital_score, 1),
+            "water_resources": round(water_score, 1)
+        },
+        
+        # Weighted contributions
+        "weighted_contributions": {
+            "capacity": round(capacity_score * weights["capacity"], 1),
+            "development_stage": round(stage_score * weights["development_stage"], 1),
+            "technology": round(tech_score * weights["technology"], 1),
+            "grid_infrastructure": round(grid_score * weights["grid_infrastructure"], 1),
+            "digital_infrastructure": round(digital_score * weights["digital_infrastructure"], 1),
+            "water_resources": round(water_score * weights["water_resources"], 1)
+        },
+        
+        # Persona information
+        "persona": persona,
+        "persona_weights": weights,
+        "internal_total_score": round(final_internal_score, 1),
+        "nearest_infrastructure": proximity_scores.get('nearest_distances', {})
+    }
+
+# ==================== TRADITIONAL RENEWABLE ENERGY SCORING ====================
+
+def calculate_base_investment_score_renewable(project: Dict) -> float:
+    """Traditional renewable energy base scoring (10-100)"""
+    capacity = project.get('capacity_mw', 0) or 0
+    status = str(project.get('development_status_short', '')).lower()
+    tech = str(project.get('technology_type', '')).lower()
+    
+    # Capacity scoring
+    if capacity >= 200: capacity_score = 100.0
+    elif capacity >= 100: capacity_score = 90.0
+    elif capacity >= 50: capacity_score = 75.0
+    elif capacity >= 25: capacity_score = 60.0
+    elif capacity >= 10: capacity_score = 45.0
+    elif capacity >= 5: capacity_score = 30.0
+    else: capacity_score = 15.0
+    
+    # Stage scoring
+    if 'operational' in status: stage_score = 100.0
+    elif 'construction' in status: stage_score = 90.0
+    elif 'granted' in status: stage_score = 75.0
+    elif 'submitted' in status: stage_score = 50.0
+    elif 'planning' in status: stage_score = 30.0
+    elif 'pre-planning' in status: stage_score = 20.0
+    else: stage_score = 10.0
+    
+    # Technology scoring
+    if 'solar' in tech: tech_score = 90.0
+    elif 'battery' in tech: tech_score = 85.0
+    elif 'wind' in tech: tech_score = 80.0
+    elif 'hybrid' in tech: tech_score = 75.0
+    else: tech_score = 60.0
+    
+    # Weighted combination (traditional renewable weights)
+    base_score = (
+        capacity_score * 0.30 +
+        stage_score * 0.50 +
+        tech_score * 0.20
+    )
+    
+    return min(100.0, max(10.0, base_score))
+
+def calculate_infrastructure_bonus_renewable(proximity_scores: Dict) -> float:
+    """Traditional renewable infrastructure bonus (0-40)"""
+    # Grid Infrastructure (0-25 points)
+    grid_bonus = 0.0
+    substation_score = proximity_scores.get('substation_score', 0)
+    transmission_score = proximity_scores.get('transmission_score', 0)
+    
+    if substation_score > 40: grid_bonus += 15.0
+    elif substation_score > 25: grid_bonus += 10.0
+    elif substation_score > 10: grid_bonus += 5.0
+    
+    if transmission_score > 30: grid_bonus += 10.0
+    elif transmission_score > 15: grid_bonus += 5.0
+    
+    grid_bonus = min(25.0, grid_bonus)
+    
+    # Digital Infrastructure (0-10 points)
+    digital_bonus = 0.0
+    fiber_score = proximity_scores.get('fiber_score', 0)
+    ixp_score = proximity_scores.get('ixp_score', 0)
+    
+    if fiber_score > 15: digital_bonus += 5.0
+    elif fiber_score > 8: digital_bonus += 3.0
+    
+    if ixp_score > 8: digital_bonus += 5.0
+    elif ixp_score > 4: digital_bonus += 2.0
+    
+    digital_bonus = min(10.0, digital_bonus)
+    
+    # Water Resources (0-5 points)
+    water_bonus = 0.0
+    water_score = proximity_scores.get('water_score', 0)
+    
+    if water_score > 10: water_bonus = 5.0
+    elif water_score > 5: water_bonus = 3.0
+    elif water_score > 2: water_bonus = 1.0
+    
+    return grid_bonus + digital_bonus + water_bonus
+
+def calculate_enhanced_investment_rating(project: Dict, proximity_scores: Dict, persona: Optional[PersonaType] = None) -> Dict:
+    """
+    Main scoring function that handles both renewable energy and data center personas
+    """
+    
+    # If persona specified, use persona-based scoring for data centers
+    if persona is not None:
+        return calculate_persona_weighted_score(project, proximity_scores, persona)
+    
+    # Use traditional renewable energy scoring
+    # Calculate base investment fundamentals (10-100)
+    base_score = calculate_base_investment_score_renewable(project)
+    
+    # Calculate infrastructure proximity bonus (0-40)
+    infrastructure_bonus = calculate_infrastructure_bonus_renewable(proximity_scores)
+    
+    # Combine scores (cap at 100 for clean 10.0 display)
+    total_internal_score = min(100.0, base_score + infrastructure_bonus)
+    
+    # Convert to display scale (1.0-10.0)
+    display_rating = total_internal_score / 10.0
+    
+    # Get color and description
+    color = get_color_from_score(total_internal_score)
+    description = get_rating_description(total_internal_score)
+    
+    return {
+        # Display scores (for users)
+        "base_investment_score": round(base_score / 10.0, 1),           # Display as X.X/10
+        "infrastructure_bonus": round(infrastructure_bonus / 10.0, 1),  # Display as +X.X/10
+        "investment_rating": round(display_rating, 1),                  # Display as X.X/10
+        
+        # UI elements
+        "rating_description": description,
+        "color_code": color,
+        "nearest_infrastructure": proximity_scores.get('nearest_distances', {}),
+        "internal_total_score": round(total_internal_score, 1),
+        "scoring_methodology": "Traditional renewable energy scoring (10-100 internal, 1.0-10.0 display)"
+    }
+
+# ==================== BATCH PROXIMITY CALCULATION ====================
+
 async def calculate_proximity_scores_batch(projects: List[Dict]) -> List[Dict]:
     """OPTIMIZED: Calculate proximity scores for multiple projects efficiently"""
     
@@ -472,49 +609,142 @@ async def calculate_proximity_scores_batch(projects: List[Dict]) -> List[Dict]:
     
     return results
 
-def calculate_enhanced_score(project: Dict, proximity_scores: Dict) -> Dict:
-    """UPDATED: Calculate both legacy and persona-based scoring"""
-    
-    # Get original legacy scoring (for backward compatibility)
-    original_scoring = calculate_score(project)
-    base_score = original_scoring['investment_score']
-    
-    # Add proximity bonus (legacy method)
-    proximity_bonus = min(proximity_scores['total_proximity_bonus'], 95)
-    enhanced_score = min(base_score + proximity_bonus, 195)
-    
-    # Legacy enhanced grading scale
-    if enhanced_score >= 170: grade, color = "A++", "#00DD00"
-    elif enhanced_score >= 150: grade, color = "A+", "#00FF00"  
-    elif enhanced_score >= 130: grade, color = "A", "#7FFF00"
-    elif enhanced_score >= 110: grade, color = "B+", "#FFFF00"
-    elif enhanced_score >= 90: grade, color = "B", "#FFA500"
-    elif enhanced_score >= 70: grade, color = "C+", "#FF7700"
-    elif enhanced_score >= 50: grade, color = "C", "#FF4500"
-    else: grade, color = "D", "#FF0000"
-    
-    # NEW: Calculate component scores and persona scores
-    component_scores = calculate_component_scores(project, proximity_scores)
-    persona_scores = calculate_persona_scores(component_scores)
-    
-    return {
-        # Legacy format (keep for backward compatibility)
-        "base_investment_score": base_score,
-        "proximity_bonus": round(proximity_bonus, 1),
-        "enhanced_investment_score": round(enhanced_score, 1),
-        "investment_grade": grade,
-        "color_code": color,
-        "proximity_details": proximity_scores,
-        
-        # NEW: Persona-based scoring
-        "personas": persona_scores,
-        "component_breakdown": component_scores
+def calculate_rating_distribution(features: List[Dict]) -> Dict:
+    """Calculate distribution of ratings for metadata"""
+    distribution = {
+        "excellent": 0, "very_good": 0, "good": 0, "above_average": 0, "average": 0,
+        "below_average": 0, "poor": 0, "very_poor": 0, "bad": 0
     }
+    
+    for feature in features:
+        rating = feature.get("properties", {}).get("investment_rating", 0)
+        if rating >= 9.0: distribution["excellent"] += 1
+        elif rating >= 8.0: distribution["very_good"] += 1
+        elif rating >= 7.0: distribution["good"] += 1
+        elif rating >= 6.0: distribution["above_average"] += 1
+        elif rating >= 5.0: distribution["average"] += 1
+        elif rating >= 4.0: distribution["below_average"] += 1
+        elif rating >= 3.0: distribution["poor"] += 1
+        elif rating >= 2.0: distribution["very_poor"] += 1
+        else: distribution["bad"] += 1
+    
+    return distribution
 
-# NEW: User site scoring endpoint
+# ==================== API ENDPOINTS ====================
+
+@app.get("/")
+async def root():
+    return {"message": "Infranodal API v2.1 with Persona-Based Scoring", "status": "active"}
+
+@app.get("/health")
+async def health():
+    try:
+        print("🔄 Testing database connection...")
+        data = await query_supabase("renewable_projects?select=count")
+        count = len(data)
+        print(f"✅ Database connected: {count} records")
+        return {"status": "healthy", "database": "connected", "projects": count}
+    except Exception as e:
+        print(f"❌ Database error: {e}")
+        return {"status": "degraded", "database": "disconnected", "error": str(e)}
+
+@app.get("/api/projects")
+async def get_projects(
+    limit: int = Query(100), 
+    technology: Optional[str] = None,
+    country: Optional[str] = None,
+    persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring")
+):
+    """Get projects with persona-based or renewable energy scoring"""
+    query_parts = ["renewable_projects?select=*"]
+    filters = []
+    
+    if technology: filters.append(f"technology_type.ilike.%{technology}%")
+    if country: filters.append(f"country.ilike.%{country}%")
+    if filters: query_parts.append("&".join(filters))
+    query_parts.append(f"limit={limit}")
+    
+    projects = await query_supabase("&".join(query_parts))
+    
+    for project in projects:
+        # Use persona-based scoring if persona specified, otherwise renewable energy scoring
+        dummy_proximity = {
+            'substation_score': 0, 'transmission_score': 0, 'fiber_score': 0,
+            'ixp_score': 0, 'water_score': 0, 'nearest_distances': {}
+        }
+        
+        if persona:
+            rating_result = calculate_persona_weighted_score(project, dummy_proximity, persona)
+        else:
+            rating_result = calculate_enhanced_investment_rating(project, dummy_proximity)
+        
+        # Add new rating fields
+        project.update({
+            "investment_rating": rating_result['investment_rating'],
+            "rating_description": rating_result['rating_description'],
+            "color_code": rating_result['color_code'],
+            "component_scores": rating_result.get('component_scores'),
+            "weighted_contributions": rating_result.get('weighted_contributions'),
+            "persona": rating_result.get('persona'),
+            "base_score": rating_result.get('base_investment_score', rating_result['investment_rating']),
+            "infrastructure_bonus": rating_result.get('infrastructure_bonus', 0.0)
+        })
+    
+    return projects
+
+@app.get("/api/projects/geojson")
+async def get_geojson(persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring")):
+    """Get projects GeoJSON with persona-based or renewable energy scoring"""
+    projects = await query_supabase("renewable_projects?select=*&limit=500")
+    features = []
+    
+    for project in projects:
+        if not project.get('longitude') or not project.get('latitude'):
+            continue
+        
+        # Use persona-based scoring if persona specified, otherwise renewable energy scoring
+        dummy_proximity = {
+            'substation_score': 0, 'transmission_score': 0, 'fiber_score': 0,
+            'ixp_score': 0, 'water_score': 0, 'nearest_distances': {}
+        }
+        
+        if persona:
+            rating_result = calculate_persona_weighted_score(project, dummy_proximity, persona)
+        else:
+            rating_result = calculate_enhanced_investment_rating(project, dummy_proximity)
+        
+        features.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [project['longitude'], project['latitude']]},
+            "properties": {
+                "ref_id": project['ref_id'],
+                "site_name": project['site_name'],
+                "technology_type": project['technology_type'],
+                "operator": project.get('operator'),
+                "capacity_mw": project.get('capacity_mw'),
+                "county": project.get('county'),
+                "country": project.get('country'),
+                
+                # NEW 1-10 rating system
+                "investment_rating": rating_result['investment_rating'],
+                "rating_description": rating_result['rating_description'], 
+                "color_code": rating_result['color_code'],
+                "component_scores": rating_result.get('component_scores'),
+                "weighted_contributions": rating_result.get('weighted_contributions'),
+                "persona": rating_result.get('persona'),
+                "base_score": rating_result.get('base_investment_score', rating_result['investment_rating']),
+                "infrastructure_bonus": rating_result.get('infrastructure_bonus', 0.0)
+            }
+        })
+    
+    return {"type": "FeatureCollection", "features": features}
+
 @app.post("/api/user-sites/score")
-async def score_user_sites(sites: List[UserSite]):
-    """Score user-uploaded renewable energy sites"""
+async def score_user_sites(
+    sites: List[UserSite],
+    persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring")
+):
+    """Score user-uploaded sites with persona-based or renewable energy scoring"""
     
     if not sites:
         raise HTTPException(400, "No sites provided")
@@ -533,7 +763,8 @@ async def score_user_sites(sites: List[UserSite]):
         if not (2025 <= site.commissioning_year <= 2035):
             raise HTTPException(400, f"Site {i+1}: Commissioning year must be between 2025-2035")
     
-    print(f"🔄 Scoring {len(sites)} user-submitted sites...")
+    scoring_mode = "persona-based" if persona else "renewable energy"
+    print(f"🔄 Scoring {len(sites)} user-submitted sites with {scoring_mode.upper()} system...")
     start_time = time.time()
     
     try:
@@ -548,14 +779,14 @@ async def score_user_sites(sites: List[UserSite]):
                 'longitude': site.longitude,
                 'commissioning_year': site.commissioning_year,
                 'is_btm': site.is_btm,
-                # Add default status for base scoring
+                # Add default status for scoring
                 'development_status_short': 'planning'
             })
         
         # Calculate proximity scores in batch
         proximity_scores = await calculate_proximity_scores_batch(sites_for_calc)
         
-        # Score each site
+        # Score each site with selected system
         scored_sites = []
         for i, site_data in enumerate(sites_for_calc):
             # Get proximity scores for this site
@@ -569,8 +800,11 @@ async def score_user_sites(sites: List[UserSite]):
                     'nearest_distances': {}
                 }
             
-            # Calculate enhanced score
-            enhanced_scoring = calculate_enhanced_score(site_data, prox_scores)
+            # Calculate rating based on persona or renewable energy
+            if persona:
+                rating_result = calculate_persona_weighted_score(site_data, prox_scores, persona)
+            else:
+                rating_result = calculate_enhanced_investment_rating(site_data, prox_scores)
             
             result = {
                 "site_name": site_data['site_name'],
@@ -579,29 +813,219 @@ async def score_user_sites(sites: List[UserSite]):
                 "commissioning_year": site_data['commissioning_year'],
                 "is_btm": site_data['is_btm'],
                 "coordinates": [site_data['longitude'], site_data['latitude']],
-                "base_score": enhanced_scoring['base_investment_score'],
-                "proximity_bonus": enhanced_scoring['proximity_bonus'],
-                "enhanced_score": enhanced_scoring['enhanced_investment_score'],
-                "investment_grade": enhanced_scoring['investment_grade'],
-                "color_code": enhanced_scoring['color_code'],
-                "nearest_infrastructure": enhanced_scoring['proximity_details']['nearest_distances'],
-                # ADD THESE TWO LINES
-                "personas": enhanced_scoring['personas'],
-                "component_breakdown": enhanced_scoring['component_breakdown']
+                
+                # NEW 1-10 RATING SYSTEM
+                "investment_rating": rating_result['investment_rating'],
+                "rating_description": rating_result['rating_description'],
+                "color_code": rating_result['color_code'],
+                "component_scores": rating_result.get('component_scores'),
+                "weighted_contributions": rating_result.get('weighted_contributions'),
+                "persona": rating_result.get('persona'),
+                "base_score": rating_result.get('base_investment_score', rating_result['investment_rating']),
+                "infrastructure_bonus": rating_result.get('infrastructure_bonus', 0.0),
+                
+                # Detailed breakdown for transparency
+                "nearest_infrastructure": rating_result['nearest_infrastructure'],
+                "methodology": f"{scoring_mode} scoring system"
             }
             
             scored_sites.append(result)
         
         processing_time = time.time() - start_time
-        print(f"✅ User sites scored in {processing_time:.2f}s")
+        print(f"✅ User sites scored with {scoring_mode.upper()} SYSTEM in {processing_time:.2f}s")
         
-        return scored_sites
+        return {
+            "sites": scored_sites,
+            "metadata": {
+                "scoring_system": f"{scoring_mode} - 1.0-10.0 Investment Rating Scale",
+                "persona": persona,
+                "processing_time_seconds": round(processing_time, 2),
+                "algorithm_version": "2.1 - Persona-Based Infrastructure Proximity Enhanced",
+                "rating_scale": {
+                    "9.0-10.0": "Excellent - Premium investment opportunity",
+                    "8.0-8.9": "Very Good - Strong investment potential", 
+                    "7.0-7.9": "Good - Solid investment opportunity",
+                    "6.0-6.9": "Above Average - Moderate investment potential",
+                    "5.0-5.9": "Average - Standard investment opportunity",
+                    "4.0-4.9": "Below Average - Limited investment appeal",
+                    "3.0-3.9": "Poor - Significant investment challenges",
+                    "2.0-2.9": "Very Poor - High risk investment",
+                    "1.0-1.9": "Bad - Unfavorable investment conditions"
+                }
+            }
+        }
         
     except Exception as e:
         print(f"❌ Error scoring user sites: {e}")
         raise HTTPException(500, f"Scoring failed: {str(e)}")
 
-# Infrastructure endpoints
+@app.get("/api/projects/enhanced")
+async def get_enhanced_geojson(
+    limit: int = Query(50, description="Number of projects to process"),
+    persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring")
+):
+    """ENHANCED BATCH VERSION: Get projects with persona-based or renewable energy scoring"""
+    start_time = time.time()
+    
+    scoring_mode = "persona-based" if persona else "renewable energy"
+    print(f"🚀 ENHANCED ENDPOINT WITH {scoring_mode.upper()} SCORING - Processing {limit} projects...")
+    
+    try:
+        projects = await query_supabase(f"renewable_projects?select=*&limit={limit}")
+        print(f"✅ Loaded {len(projects)} projects from database")
+    except Exception as e:
+        print(f"❌ Database error: {e}")
+        return {"error": "Database connection failed", "type": "FeatureCollection", "features": []}
+    
+    # Filter projects with valid coordinates
+    valid_projects = []
+    for project in projects:
+        if project.get('longitude') and project.get('latitude'):
+            valid_projects.append(project)
+    
+    print(f"📍 {len(valid_projects)} projects have valid coordinates")
+    
+    if not valid_projects:
+        return {"type": "FeatureCollection", "features": [], "metadata": {"error": "No projects with valid coordinates"}}
+    
+    try:
+        # BATCH PROCESSING: Calculate all proximity scores at once
+        print("🔄 Starting batch proximity calculation...")
+        batch_start = time.time()
+        
+        all_proximity_scores = await calculate_proximity_scores_batch(valid_projects)
+        
+        batch_time = time.time() - batch_start
+        print(f"✅ Batch proximity calculation completed in {batch_time:.2f}s")
+        
+    except Exception as e:
+        print(f"❌ Error in batch proximity calculation: {e}")
+        # Fallback to basic scoring
+        all_proximity_scores = []
+        for _ in valid_projects:
+            all_proximity_scores.append({
+                'substation_score': 0, 'transmission_score': 0, 'fiber_score': 0,
+                'ixp_score': 0, 'water_score': 0, 'total_proximity_bonus': 0,
+                'nearest_distances': {}
+            })
+    
+    # Build features with scoring based on persona
+    features = []
+    for i, project in enumerate(valid_projects):
+        try:
+            if i < len(all_proximity_scores):
+                proximity_scores = all_proximity_scores[i]
+            else:
+                # Fallback scoring
+                proximity_scores = {
+                    'substation_score': 0, 'transmission_score': 0, 'fiber_score': 0,
+                    'ixp_score': 0, 'water_score': 0, 'total_proximity_bonus': 0,
+                    'nearest_distances': {}
+                }
+            
+            # Use persona-based scoring if persona specified, otherwise renewable energy scoring
+            if persona:
+                rating_result = calculate_persona_weighted_score(project, proximity_scores, persona)
+            else:
+                rating_result = calculate_enhanced_investment_rating(project, proximity_scores)
+            
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [project['longitude'], project['latitude']]},
+                "properties": {
+                    "ref_id": project['ref_id'],
+                    "site_name": project['site_name'],
+                    "technology_type": project['technology_type'],
+                    "operator": project.get('operator'), 
+                    "capacity_mw": project.get('capacity_mw'),
+                    "county": project.get('county'),
+                    "country": project.get('country'),
+                    
+                    # NEW UNIFIED RATING SYSTEM
+                    "investment_rating": rating_result['investment_rating'],
+                    "rating_description": rating_result['rating_description'],
+                    "color_code": rating_result['color_code'],
+                    
+                    # Scoring breakdown
+                    "component_scores": rating_result.get('component_scores'),
+                    "weighted_contributions": rating_result.get('weighted_contributions'),
+                    "nearest_infrastructure": rating_result['nearest_infrastructure'],
+                    
+                    # Persona information (if applicable)
+                    "persona": rating_result.get('persona'),
+                    "persona_weights": rating_result.get('persona_weights'),
+                    
+                    # Legacy compatibility
+                    "base_score": rating_result.get('base_investment_score', rating_result['investment_rating']),
+                    "infrastructure_bonus": rating_result.get('infrastructure_bonus', 0.0),
+                    "internal_total_score": rating_result.get('internal_total_score')
+                }
+            })
+            
+        except Exception as e:
+            print(f"❌ Error processing project {i+1}: {e}")
+            # Add fallback scoring
+            fallback_rating = {
+                'investment_rating': 5.0,
+                'rating_description': 'Average',
+                'color_code': '#FFFF00',
+                'nearest_infrastructure': {}
+            }
+            
+            features.append({
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [project['longitude'], project['latitude']]},
+                "properties": {
+                    "ref_id": project['ref_id'],
+                    "site_name": project['site_name'],
+                    "operator": project.get('operator'),  
+                    "technology_type": project['technology_type'],
+                    "capacity_mw": project.get('capacity_mw'),
+                    "county": project.get('county'),
+                    "country": project.get('country'),
+                    
+                    # Fallback rating
+                    "investment_rating": fallback_rating['investment_rating'],
+                    "rating_description": fallback_rating['rating_description'],
+                    "color_code": fallback_rating['color_code'],
+                    "nearest_infrastructure": fallback_rating['nearest_infrastructure']
+                }
+            })
+    
+    processing_time = time.time() - start_time
+    
+    if persona:
+        print(f"🎯 PERSONA-BASED SCORING ({persona.upper()}) COMPLETE: {len(features)} features in {processing_time:.2f}s")
+    else:
+        print(f"🎯 RENEWABLE ENERGY SCORING COMPLETE: {len(features)} features in {processing_time:.2f}s")
+    
+    return {
+        "type": "FeatureCollection", 
+        "features": features,
+        "metadata": {
+            "scoring_system": f"{scoring_mode} - 1.0-10.0 display scale",
+            "persona": persona,
+            "processing_time_seconds": round(processing_time, 2),
+            "projects_processed": len(features),
+            "algorithm_version": "2.1 - Persona-Based Infrastructure Scoring",
+            "performance_optimization": "Batch proximity scoring (10-50x faster)",
+            "rating_distribution": calculate_rating_distribution(features),
+            "rating_scale_guide": {
+                "excellent": "9.0-10.0",
+                "very_good": "8.0-8.9", 
+                "good": "7.0-7.9",
+                "above_average": "6.0-6.9",
+                "average": "5.0-5.9",
+                "below_average": "4.0-4.9",
+                "poor": "3.0-3.9",
+                "very_poor": "2.0-2.9",
+                "bad": "1.0-1.9"
+            }
+        }
+    }
+
+# ==================== INFRASTRUCTURE ENDPOINTS ====================
+
 @app.get("/api/infrastructure/transmission")
 async def get_transmission_lines():
     """Get power lines for the map"""
@@ -793,130 +1217,68 @@ async def get_water_resources():
     
     return {"type": "FeatureCollection", "features": features}
 
-# OPTIMIZED ENHANCED ENDPOINT - BATCH VERSION
-@app.get("/api/projects/enhanced")
-async def get_enhanced_geojson(limit: int = Query(50, description="Number of projects to process")):
-    """OPTIMIZED BATCH VERSION: Get projects with enhanced proximity-based scoring"""
-    start_time = time.time()
+# ==================== COMPARISON ENDPOINT FOR TESTING ====================
+
+@app.get("/api/projects/compare-scoring")
+async def compare_scoring_systems(
+    limit: int = Query(10, description="Projects to compare"),
+    persona: PersonaType = Query("hyperscaler", description="Persona for comparison")
+):
+    """Compare traditional renewable vs persona-based scoring systems"""
     
-    print(f"🚀 ENHANCED ENDPOINT CALLED (BATCH VERSION) - Processing {limit} projects...")
+    projects = await query_supabase(f"renewable_projects?select=*&limit={limit}")
     
-    try:
-        projects = await query_supabase(f"renewable_projects?select=*&limit={limit}")
-        print(f"✅ Loaded {len(projects)} projects from database")
-    except Exception as e:
-        print(f"❌ Database error: {e}")
-        return {"error": "Database connection failed", "type": "FeatureCollection", "features": []}
-    
-    # Filter projects with valid coordinates
-    valid_projects = []
+    comparison = []
     for project in projects:
-        if project.get('longitude') and project.get('latitude'):
-            valid_projects.append(project)
-    
-    print(f"📍 {len(valid_projects)} projects have valid coordinates")
-    
-    if not valid_projects:
-        return {"type": "FeatureCollection", "features": [], "metadata": {"error": "No projects with valid coordinates"}}
-    
-    try:
-        # BATCH PROCESSING: Calculate all proximity scores at once
-        print("🔄 Starting batch proximity calculation...")
-        batch_start = time.time()
+        if not project.get('longitude') or not project.get('latitude'):
+            continue
         
-        all_proximity_scores = await calculate_proximity_scores_batch(valid_projects)
+        # Dummy proximity for comparison
+        dummy_proximity = {
+            'substation_score': 0, 'transmission_score': 0, 'fiber_score': 0,
+            'ixp_score': 0, 'water_score': 0, 'nearest_distances': {}
+        }
         
-        batch_time = time.time() - batch_start
-        print(f"✅ Batch proximity calculation completed in {batch_time:.2f}s")
+        # OLD SYSTEM (renewable energy scoring)
+        renewable_rating = calculate_enhanced_investment_rating(project, dummy_proximity)
         
-    except Exception as e:
-        print(f"❌ Error in batch proximity calculation: {e}")
-        # Fallback to basic scoring
-        all_proximity_scores = []
-        for _ in valid_projects:
-            all_proximity_scores.append({
-                'substation_score': 0, 'transmission_score': 0, 'fiber_score': 0,
-                'ixp_score': 0, 'water_score': 0, 'total_proximity_bonus': 0,
-                'nearest_distances': {}
-            })
-    
-    # Build features with enhanced scoring
-    features = []
-    for i, project in enumerate(valid_projects):
-        try:
-            if i < len(all_proximity_scores):
-                proximity_scores = all_proximity_scores[i]
-            else:
-                # Fallback scoring
-                proximity_scores = {
-                    'substation_score': 0, 'transmission_score': 0, 'fiber_score': 0,
-                    'ixp_score': 0, 'water_score': 0, 'total_proximity_bonus': 0,
-                    'nearest_distances': {}
-                }
-            
-            enhanced_scoring = calculate_enhanced_score(project, proximity_scores)
-            
-            features.append({
-                "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [project['longitude'], project['latitude']]},
-                "properties": {
-                    "ref_id": project['ref_id'],
-                    "site_name": project['site_name'],
-                    "technology_type": project['technology_type'],
-                    "operator": project.get('operator'), 
-                    "capacity_mw": project.get('capacity_mw'),
-                    "county": project.get('county'),
-                    "base_score": enhanced_scoring['base_investment_score'],
-                    "proximity_bonus": enhanced_scoring['proximity_bonus'],
-                    "enhanced_score": enhanced_scoring['enhanced_investment_score'],
-                    "investment_grade": enhanced_scoring['investment_grade'],
-                    "color_code": enhanced_scoring['color_code'],
-                    "nearest_infrastructure": enhanced_scoring['proximity_details']['nearest_distances'],
-                    "personas": enhanced_scoring['personas'],
-                    "component_breakdown": enhanced_scoring['component_breakdown']
-                }
-            })
-            
-        except Exception as e:
-            print(f"❌ Error processing project {i+1}: {e}")
-            # Add basic scoring as fallback
-            basic_score = calculate_score(project)
-            features.append({
-                "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [project['longitude'], project['latitude']]},
-                "properties": {
-                    "ref_id": project['ref_id'],
-                    "site_name": project['site_name'],
-                    "operator": project.get('operator'),  
-                    "technology_type": project['technology_type'],
-                    "capacity_mw": project.get('capacity_mw'),
-                    "county": project.get('county'),
-                    "base_score": basic_score['investment_score'],
-                    "proximity_bonus": 0,
-                    "enhanced_score": basic_score['investment_score'],
-                    "investment_grade": basic_score['investment_grade'],
-                    "color_code": basic_score['color_code'],
-                    "nearest_infrastructure": {}
-                }
-            })
-    
-    processing_time = time.time() - start_time
-    print(f"🎯 BATCH ENHANCED ENDPOINT COMPLETE: {len(features)} features in {processing_time:.2f}s")
+        # NEW SYSTEM (persona-based scoring)
+        persona_rating = calculate_persona_weighted_score(project, dummy_proximity, persona)
+        
+        comparison.append({
+            "site_name": project.get('site_name'),
+            "capacity_mw": project.get('capacity_mw'),
+            "technology_type": project.get('technology_type'),
+            "renewable_energy_system": {
+                "investment_rating": renewable_rating['investment_rating'],
+                "rating_description": renewable_rating['rating_description'],
+                "color": renewable_rating['color_code']
+            },
+            "persona_system": {
+                "persona": persona,
+                "investment_rating": persona_rating['investment_rating'],
+                "rating_description": persona_rating['rating_description'],
+                "color": persona_rating['color_code'],
+                "component_scores": persona_rating['component_scores'],
+                "weighted_contributions": persona_rating['weighted_contributions']
+            }
+        })
     
     return {
-        "type": "FeatureCollection", 
-        "features": features,
-        "metadata": {
-            "processing_time_seconds": round(processing_time, 2),
-            "projects_processed": len(features),
-            "algorithm_status": "OPTIMIZED: Batch proximity scoring",
-            "performance_improvement": f"Expected 10-50x faster than individual processing",
-            "batch_optimization": "Infrastructure loaded once, not per project"
+        "comparison": comparison,
+        "summary": {
+            "renewable_system": "Traditional renewable energy scoring (capacity, stage, tech)",
+            "persona_system": f"{persona} data center scoring with custom weightings",
+            "persona_weights": PERSONA_WEIGHTS[persona],
+            "migration_benefits": [
+                "Scoring tailored to specific data center requirements",
+                "Transparent component breakdown showing why sites score differently", 
+                "Infrastructure priorities matching real deployment needs",
+                "Better investment decision making for specific use cases"
+            ]
         }
     }
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
-
-
