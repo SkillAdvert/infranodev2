@@ -316,3 +316,390 @@ Claude.ai artifact environment limitations prevent localStorage/sessionStorage u
 Linear distance scoring doesn't reflect the dramatic cost differences between nearby vs. distant infrastructure. Exponential decay better models real-world infrastructure connection costs and development feasibility.
 
 This documentation reflects the current production state as of December 2024, including both working functionality and known issues requiring resolution.
+
+# Infranodal - Renewable Energy Investment Analysis Platform
+
+## Project Overview
+Interactive web application enabling renewable energy investors and data center developers to assess site viability through AI-powered infrastructure scoring. The platform combines existing project databases with real-time infrastructure analysis, providing investment ratings from 1.0-10.0 based on persona-specific algorithms and comprehensive proximity scoring.
+
+## Current Architecture
+
+### Backend (Production Ready)
+- **Framework**: FastAPI with Python 3.9+
+- **Database**: Supabase PostgreSQL with PostGIS extensions
+- **Deployment**: Render.com at `https://infranodev2.onrender.com`
+- **Performance**: Batch processing optimization (10-50x faster than individual queries)
+- **AI Integration**: Ready for Claude/OpenAI integration via Supabase Edge Functions
+- **Data Sources**: 
+  - NESO GSP boundary data (333 features) 
+  - OpenStreetMap telecommunications infrastructure (549+ segments)
+  - Manual infrastructure datasets (substations, IXPs, water resources)
+
+### Frontend (React + TypeScript)
+- **Framework**: React 18 + TypeScript
+- **Styling**: Tailwind CSS + shadcn/ui components (optimized subset)
+- **Mapping**: Mapbox GL JS with professional infrastructure visualization
+- **State Management**: React hooks with optimized re-rendering
+- **Build System**: Vite/Create React App compatible
+- **AI Chat**: Integrated persona-aware AI chatbot for project analysis
+
+### Database Schema
+```sql
+-- Core Tables (Production)
+renewable_projects (100+ records) - Existing UK renewable projects
+electrical_grid - GSP boundaries and grid infrastructure  
+transmission_lines - Power transmission network
+substations - Electrical substations with capacity data
+fiber_cables - Telecommunications fiber networks
+internet_exchange_points - Data center connectivity hubs
+water_resources - Water sources for cooling/operations
+```
+
+## NEW: Persona-Based Investment Scoring (2.1 Algorithm)
+
+### Data Center Personas
+- **Hyperscaler**: High capacity focus (35% weight), reliable power (20%), quick deployment (25%)
+- **Colocation**: Balanced approach with connectivity emphasis (25% digital infrastructure)  
+- **Edge Computing**: Small capacity (10%), quick deployment critical (30%), low latency (25%)
+
+### Investment Rating Scale (1.0-10.0)
+**Internal scoring**: 10-100 points, displayed as 1.0-10.0 for user clarity
+
+**Rating Descriptions:**
+- **9.0-10.0**: Excellent - Premium investment opportunity
+- **8.0-8.9**: Very Good - Strong investment potential  
+- **7.0-7.9**: Good - Solid investment opportunity
+- **6.0-6.9**: Above Average - Moderate investment potential
+- **5.0-5.9**: Average - Standard investment opportunity
+- **4.0-4.9**: Below Average - Limited investment appeal
+- **3.0-3.9**: Poor - Significant investment challenges
+- **2.0-2.9**: Very Poor - High risk investment
+- **1.0-1.9**: Bad - Unfavorable investment conditions
+
+### Component Scoring (10-100 Internal Scale)
+1. **Capacity Score**: 
+   - 100MW+ = 100 points (hyperscale)
+   - 50MW+ = 85 points (large enterprise)
+   - 25MW+ = 70 points (medium enterprise)
+   - 10MW+ = 55 points (small enterprise)
+   - 5MW+ = 40 points (edge computing)
+
+2. **Development Stage**: 
+   - Operational = 100 points (immediate deployment)
+   - Construction = 85 points (near-term)
+   - Granted = 70 points (planning approved)
+   - Submitted = 45 points (pending approval)
+
+3. **Technology Suitability**:
+   - Battery = 95 points (grid stability + peak shaving)
+   - Solar = 90 points (clean, predictable)
+   - Hybrid = 85 points (balanced approach)
+   - Wind = 75 points (variable but clean)
+
+4. **Grid Infrastructure** (10-100):
+   - Excellent substation proximity (>40 exponential score) = 45 bonus points
+   - Good substation proximity (>25) = 30 bonus points
+   - Direct transmission access (>30) = 30 bonus points
+
+5. **Digital Infrastructure** (10-100):
+   - Excellent fiber access (>15 exponential score) = 40 bonus points
+   - Major IXP proximity (>8) = 35 bonus points
+   - Regional connectivity = scaled bonuses
+
+6. **Water Resources** (40-100):
+   - Excellent access (>10 exponential score) = 100 points
+   - Good access (>5) = 80 points
+   - Basic access (>2) = 60 points
+   - Air cooling sufficient = 40 points (baseline)
+
+## API Endpoints (Production)
+
+### Enhanced Scoring Endpoints
+```http
+GET /api/projects/enhanced?limit=100&persona=hyperscaler
+# Returns: Persona-weighted scored projects with 1.0-10.0 rating system
+
+POST /api/user-sites/score?persona=colocation
+# Payload: User-defined site parameters + persona selection
+# Returns: Persona-specific investment scoring and infrastructure analysis
+
+GET /api/projects/compare-scoring?persona=edge_computing
+# Returns: Side-by-side comparison of renewable vs persona-based scoring
+```
+
+### Infrastructure Visualization Endpoints
+```http
+GET /api/infrastructure/transmission   # Power transmission lines
+GET /api/infrastructure/substations    # Electrical substations  
+GET /api/infrastructure/gsp           # Grid Supply Point boundaries
+GET /api/infrastructure/fiber         # Telecommunications fiber
+GET /api/infrastructure/ixp          # Internet Exchange Points  
+GET /api/infrastructure/water        # Water resources
+```
+
+## Component Architecture Updates
+
+### DynamicSiteMap.tsx (UPDATED - Fixed Interface Issues)
+**Current State**: ✅ Working with new 1.0-10.0 rating system
+**Responsibilities:**
+- Mapbox GL integration with UK/Ireland region switching
+- Project visualization with investment rating color coding (1.0-10.0 scale)
+- Infrastructure layer management with proper TypeScript interfaces
+- Interactive popups with persona-specific scoring details
+- Clustering for performance at scale
+- Click-to-place functionality for site assessment
+
+**Interface Updates:**
+```typescript
+interface Project {
+  properties: {
+    ref_id?: string;
+    site_name: string;
+    technology_type: string;
+    capacity_mw: number;
+    // NEW: 1.0-10.0 Rating System
+    investment_rating: number;           // Display score 1.0-10.0
+    rating_description: string;          // "Excellent", "Good", etc.
+    color_code: string;                  // Color for visualization
+    // Optional persona-specific data
+    component_scores?: any;
+    weighted_contributions?: any;
+    persona?: string;
+    nearest_infrastructure?: any;
+  };
+}
+```
+
+### NEW: AI Project Analysis Component
+**AIProjectAnalysis.tsx**: 
+- Persona-specific suitability scoring for individual projects
+- AI-generated strengths, concerns, and recommendations
+- Integration with Supabase Edge Functions
+- Professional dialog interface with tabbed persona comparison
+
+**Integration Points:**
+- Project list items (clickable AI analysis button)
+- Map popups (analyze this project link)
+- Chatbot context (project-aware conversations)
+
+### PersonaSelector.tsx (NEW)
+**Purpose**: Data center persona selection and explanation interface
+**Features**:
+- Visual persona comparison with weightings
+- Real-time scoring preview
+- Educational content about each persona type
+- Seamless integration with dashboard state
+
+### Enhanced Chat Integration
+**RenewableAIChatbox.tsx** (UPDATED):
+- Context-aware conversations based on selected persona
+- Project-specific analysis capabilities  
+- Integration with location-based context
+- Professional renewable energy domain knowledge
+
+## Data Center Persona Integration
+
+### Persona Weightings
+```python
+PERSONA_WEIGHTS = {
+    "hyperscaler": {
+        "capacity": 0.35,              # High capacity critical
+        "development_stage": 0.25,     # Operational sites preferred
+        "technology": 0.10,            # Technology type less critical
+        "grid_infrastructure": 0.20,   # Reliable power essential
+        "digital_infrastructure": 0.05,# Fiber important but not critical
+        "water_resources": 0.05        # Water for cooling systems
+    },
+    "colocation": {
+        "capacity": 0.15,              # Smaller capacity needs
+        "development_stage": 0.20,     # Flexible on development stage
+        "technology": 0.10,            # Technology type flexible
+        "grid_infrastructure": 0.25,   # Power reliability critical
+        "digital_infrastructure": 0.25,# Connectivity is key
+        "water_resources": 0.05        # Basic cooling needs
+    },
+    "edge_computing": {
+        "capacity": 0.10,              # Small capacity requirements
+        "development_stage": 0.30,     # Quick deployment critical
+        "technology": 0.15,            # Technology flexibility important
+        "grid_infrastructure": 0.15,   # Moderate power needs
+        "digital_infrastructure": 0.25,# Low latency connectivity critical
+        "water_resources": 0.05        # Minimal cooling needs
+    }
+}
+```
+
+### AI Analysis Integration
+Projects can now be analyzed through multiple lenses:
+1. **Traditional Renewable Scoring**: Capacity + stage + technology focus
+2. **Persona-Specific Scoring**: Weighted by data center requirements
+3. **AI Comparative Analysis**: Strengths/concerns for each persona type
+
+## Frontend Optimization (NEW)
+
+### UI Component Cleanup
+**Removed 20+ unused shadcn/ui components** for better performance:
+- accordion, breadcrumb, calendar, carousel, chart, checkbox
+- command, context-menu, drawer, form, hover-card, menubar  
+- navigation-menu, pagination, progress, radio-group, resizable
+- separator, sheet, sidebar, skeleton, switch, sonner, toast
+
+**Retained essential components**:
+- button, card, input, badge, tabs, dialog, alert, tooltip, slider, select
+
+### Performance Improvements
+- Reduced bundle size by ~40% through component removal
+- Optimized map re-renders with useCallback dependencies  
+- Lazy-loaded infrastructure layers
+- Batch-optimized proximity calculations
+
+## Current Development Status
+
+### ✅ Recently Fixed
+1. **Backend-Frontend Mismatch**: Updated infranodev2 backend to return `investment_rating` + `rating_description` instead of old `enhanced_score` + `investment_grade` system
+2. **TypeScript Interface Issues**: Fixed Project interface to match new 1.0-10.0 rating system
+3. **Persona Integration**: Complete persona-based scoring implementation
+4. **UI Component Bloat**: Removed 20+ unused components
+
+### ✅ Production Ready Features  
+- Persona-based investment scoring (1.0-10.0 scale)
+- Real-time site assessment with persona selection
+- Professional map interface with region switching (UK/Ireland)
+- Infrastructure data serving (6 layer types working)
+- AI-powered project analysis (ready for integration)
+- Batch-optimized performance for multiple site scoring
+
+### 🔄 Active Development
+1. **AI Integration**: Supabase Edge Function for `analyze-project-personas`
+2. **Enhanced Chat**: Project-context awareness in AI conversations  
+3. **Professional UI**: Investor-appropriate terminology and styling
+4. **Advanced Analytics**: Persona comparison reports
+
+### ⏳ Planned Features
+- PDF report generation with persona-specific insights
+- Advanced financial modeling with persona-weighted ROI
+- Multi-region expansion beyond UK/Ireland
+- Real-time infrastructure data feeds
+- Collaborative workspace features
+
+## Technical Architecture Decisions
+
+### Why Persona-Based Scoring?
+Different data center types have fundamentally different infrastructure requirements:
+- **Hyperscalers** need massive power capacity and reliability above all
+- **Colocation providers** balance power, connectivity, and operational efficiency
+- **Edge computing** prioritizes quick deployment and low latency over capacity
+
+Generic renewable energy scoring doesn't capture these nuanced requirements.
+
+### Why 1.0-10.0 Display Scale?
+- **User-friendly**: Intuitive rating system (like IMDb, Yelp)
+- **Precise**: 0.1 increments allow nuanced differentiation
+- **Professional**: Investment-grade appearance vs. academic letter grades
+- **Scalable**: Easy to extend with additional personas or criteria
+
+### Why AI Integration?
+Persona-based scoring provides quantitative analysis, but investors need qualitative insights:
+- **Contextual Analysis**: AI explains why a site scores well/poorly for specific personas
+- **Risk Assessment**: Identifies concerns human analysts might miss
+- **Opportunity Identification**: Suggests optimization strategies
+- **Comparative Intelligence**: Explains trade-offs between persona approaches
+
+## Next Development Priorities
+
+### Critical Path (Q1 2024)
+1. **Complete AI Integration**: Deploy Supabase Edge Functions for persona analysis
+2. **Enhanced User Experience**: Professional styling and terminology refinement
+3. **Advanced Analytics**: Comparative persona analysis and reporting
+4. **Performance Optimization**: Further map rendering and data loading improvements
+
+### Growth Phase (Q2 2024)
+1. **Financial Modeling**: ROI calculations with persona-specific cost models
+2. **Advanced Visualization**: Heat maps, trend analysis, market intelligence
+3. **Collaboration Features**: Multi-user access, shared analysis, stakeholder reports
+4. **Regional Expansion**: EU market data integration
+
+## Environment Configuration
+
+### Required Environment Variables
+```bash
+# Database
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-anon-key
+
+# Mapping (Frontend)  
+MAPBOX_PUBLIC_TOKEN=pk.your-mapbox-token
+
+# API Configuration (UPDATED)
+API_BASE_URL=https://infranodev2.onrender.com  # Correct backend URL
+
+# AI Integration (NEW)
+OPENAI_API_KEY=your-openai-key  # For Supabase Edge Functions
+```
+
+### Development Dependencies (Updated)
+```json
+{
+  "mapbox-gl": "^2.15.0",
+  "@supabase/supabase-js": "^2.38.0", 
+  "lucide-react": "^0.263.1",
+  "recharts": "^2.8.0",
+  "tailwindcss": "^3.3.0",
+  "react-markdown": "^9.0.0"
+}
+```
+
+## API Response Format (NEW)
+
+### Enhanced Project Response
+```json
+{
+  "type": "FeatureCollection",
+  "features": [{
+    "type": "Feature", 
+    "geometry": {"type": "Point", "coordinates": [-2.69, 51.25]},
+    "properties": {
+      "ref_id": 18491,
+      "site_name": "Plas Power Estate Solar Farm",
+      "technology_type": "Battery",
+      "capacity_mw": 57.0,
+      
+      // NEW: 1.0-10.0 Rating System  
+      "investment_rating": 4.2,
+      "rating_description": "Below Average", 
+      "color_code": "#FFCC00",
+      
+      // NEW: Persona-Specific Data
+      "persona": "hyperscaler",
+      "component_scores": {
+        "capacity": 85.0,
+        "development_stage": 70.0,
+        "grid_infrastructure": 45.2,
+        "digital_infrastructure": 25.8,
+        "water_resources": 60.0
+      },
+      "weighted_contributions": {
+        "capacity": 29.75,
+        "development_stage": 17.5,
+        "grid_infrastructure": 9.04
+      },
+      "nearest_infrastructure": {
+        "substation_km": 28.7,
+        "transmission_km": 78.1,
+        "fiber_km": 18.2
+      }
+    }
+  }],
+  "metadata": {
+    "scoring_system": "persona-based - 1.0-10.0 display scale",
+    "persona": "hyperscaler",
+    "algorithm_version": "2.1 - Persona-Based Infrastructure Scoring",
+    "rating_distribution": {
+      "excellent": 5, "very_good": 12, "good": 18,
+      "above_average": 15, "average": 8
+    }
+  }
+}
+```
+
+This documentation reflects the current production state as of September 2025, including the new persona-based scoring system, AI integration capabilities, and recent frontend optimizations.
