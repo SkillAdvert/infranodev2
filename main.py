@@ -1016,7 +1016,7 @@ async def get_enhanced_geojson(
                 "good": "7.0-7.9",
                 "above_average": "6.0-6.9",
                 "average": "5.0-5.9",
-                "below_average": "4.0-4.9",st
+                "below_average": "4.0-4.9",
             }
         }
     }
@@ -1313,6 +1313,7 @@ async def compare_scoring_systems(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
