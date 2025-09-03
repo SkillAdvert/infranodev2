@@ -743,4 +743,314 @@ async def get_transmission_lines(
 - **Data Strategy**: Continue manual curation vs automated pipelines
 - **Business Model**: SaaS subscription vs transaction-based pricing
 
+ NEW: # Infranodal - Renewable Energy Investment Analysis Platform
+
+## Project Overview
+Interactive web application enabling renewable energy investors and data center developers to assess site viability through AI-powered infrastructure scoring. The platform combines existing project databases with real-time infrastructure analysis, providing investment ratings from 1.0-10.0 based on persona-specific algorithms and comprehensive proximity scoring, now enhanced with TNUoS transmission cost integration.
+
+## Current Architecture
+
+### Backend (Production Ready)
+- **Framework**: FastAPI with Python 3.9+
+- **Database**: Supabase PostgreSQL with PostGIS extensions
+- **Deployment**: Render.com at `https://infranodev2.onrender.com`
+- **Performance**: Batch processing optimization (10-50x faster than individual queries)
+- **AI Integration**: Ready for Claude/OpenAI integration via Supabase Edge Functions
+- **Data Sources**: 
+  - NESO GSP boundary data (333 features) 
+  - OpenStreetMap telecommunications infrastructure (549+ segments)
+  - Manual infrastructure datasets (substations, IXPs, water resources)
+  - **NEW**: TNUoS transmission cost zones (27 UK generation zones with tariff rates)
+
+### Frontend (React + TypeScript)
+- **Framework**: React 18 + TypeScript
+- **Styling**: Tailwind CSS + shadcn/ui components (optimized subset)
+- **Mapping**: Mapbox GL JS with professional infrastructure visualization
+- **State Management**: React hooks with optimized re-rendering
+- **Build System**: Vite/Create React App compatible
+- **AI Chat**: Integrated persona-aware AI chatbot for project analysis
+
+### Database Schema
+```sql
+-- Core Tables (Production)
+renewable_projects (100+ records) - Existing UK renewable projects
+electrical_grid - GSP boundaries and grid infrastructure  
+transmission_lines - Power transmission network
+substations - Electrical substations with capacity data
+fiber_cables - Telecommunications fiber networks
+internet_exchange_points - Data center connectivity hubs
+water_resources - Water sources for cooling/operations
+
+-- NEW: TNUoS Integration
+tnuos_zones (27 records) - UK transmission charging zones
+  - zone_id (GZ1-GZ27)
+  - zone_name 
+  - geometry (MULTIPOLYGON boundaries)
+  - generation_tariff_pounds_per_kw (£/kW annual rates)
+  - tariff_year (2024-25)
+```
+
+## Enhanced Persona-Based Investment Scoring (Algorithm 2.2)
+
+### Updated Scoring Components (7 Components)
+1. **Capacity Score**: Project size suitability for persona
+2. **Development Stage Score**: Deployment readiness assessment
+3. **Technology Score**: Technology type appropriateness
+4. **Grid Infrastructure Score**: Proximity to substations and transmission
+5. **Digital Infrastructure Score**: Fiber and IXP connectivity access
+6. **Water Resources Score**: Cooling infrastructure availability
+7. **TNUoS Transmission Costs Score**: Annual transmission charge impact *(NEW)*
+
+### TNUoS Cost Integration
+**Scoring Logic** (10-100 internal scale):
+- **Negative tariffs** (generators get paid): 100 points
+- **£0-5/kW annual**: 80 points  
+- **£5-10/kW annual**: 60 points
+- **£10-15/kW annual**: 40 points
+- **£15+/kW annual**: 20 points
+
+**Economic Impact Examples**:
+- 50MW project in North Scotland (£15.32/kW): -£766,000/year
+- 50MW project in South England (-£1.23/kW): +£61,500/year
+- Net economic difference: £827,500/year operational impact
+
+### Updated Persona Weightings (Algorithm 2.2)
+
+```python
+PERSONA_WEIGHTS_V2_2 = {
+    "hyperscaler": {
+        "capacity": 0.30,                    # Reduced from 0.35
+        "development_stage": 0.20,           # Reduced from 0.25  
+        "technology": 0.08,                  # Reduced from 0.10
+        "grid_infrastructure": 0.17,         # Reduced from 0.20
+        "digital_infrastructure": 0.05,      # Unchanged
+        "water_resources": 0.05,             # Unchanged
+        "tnuos_transmission_costs": 0.15     # NEW - High impact for large deployments
+    },
+    
+    "colocation": {
+        "capacity": 0.13,                    # Reduced from 0.15
+        "development_stage": 0.18,           # Reduced from 0.20
+        "technology": 0.08,                  # Reduced from 0.10
+        "grid_infrastructure": 0.22,         # Reduced from 0.25
+        "digital_infrastructure": 0.22,      # Reduced from 0.25
+        "water_resources": 0.05,             # Unchanged
+        "tnuos_transmission_costs": 0.12     # NEW - Moderate impact
+    },
+    
+    "edge_computing": {
+        "capacity": 0.09,                    # Reduced from 0.10
+        "development_stage": 0.28,           # Reduced from 0.30
+        "technology": 0.14,                  # Reduced from 0.15
+        "grid_infrastructure": 0.14,         # Reduced from 0.15
+        "digital_infrastructure": 0.23,      # Reduced from 0.25
+        "water_resources": 0.05,             # Unchanged
+        "tnuos_transmission_costs": 0.07     # NEW - Lower impact for smaller sites
+    }
+}
+```
+
+### Investment Rating Scale (1.0-10.0)
+**Internal scoring**: 10-100 points, displayed as 1.0-10.0 for user clarity
+
+**Rating Descriptions:**
+- **9.0-10.0**: Excellent - Premium investment opportunity
+- **8.0-8.9**: Very Good - Strong investment potential  
+- **7.0-7.9**: Good - Solid investment opportunity
+- **6.0-6.9**: Above Average - Moderate investment potential
+- **5.0-5.9**: Average - Standard investment opportunity
+- **4.0-4.9**: Below Average - Limited investment appeal
+- **3.0-3.9**: Poor - Significant investment challenges
+- **2.0-2.9**: Very Poor - High risk investment
+- **1.0-1.9**: Bad - Unfavorable investment conditions
+
+## API Endpoints (Production + TNUoS Enhanced)
+
+### Enhanced Scoring Endpoints
+```http
+GET /api/projects/enhanced?limit=100&persona=hyperscaler
+# Returns: Persona-weighted scored projects with TNUoS cost integration
+
+POST /api/user-sites/score?persona=colocation
+# Payload: User-defined site parameters + persona selection
+# Returns: TNUoS-aware persona-specific investment scoring
+
+GET /api/projects/compare-scoring?persona=edge_computing
+# Returns: Traditional renewable vs persona+TNUoS scoring comparison
+```
+
+### Infrastructure Visualization Endpoints
+```http
+GET /api/infrastructure/transmission   # Power transmission lines
+GET /api/infrastructure/substations    # Electrical substations  
+GET /api/infrastructure/gsp           # Grid Supply Point boundaries
+GET /api/infrastructure/fiber         # Telecommunications fiber
+GET /api/infrastructure/ixp          # Internet Exchange Points  
+GET /api/infrastructure/water        # Water resources
+GET /api/infrastructure/tnuos        # TNUoS cost zones (NEW)
+```
+
+## TNUoS Integration Status
+
+### ✅ Completed
+1. **Database Setup**: TNUoS zones table created with 27 UK generation zones
+2. **Data Pipeline**: TNUoS tariff data uploaded (2024-25 rates)
+3. **API Endpoint**: `/api/infrastructure/tnuos` serving zone boundaries and rates
+4. **Frontend Integration**: TNUoS zones display as colored polygons on map
+5. **Infrastructure Controls**: TNUoS toggle in all three dashboard pages
+
+### 🔄 In Progress
+1. **Algorithm Integration**: Adding TNUoS as 7th scoring component
+2. **Spatial Queries**: Determining which TNUoS zone each project falls within
+3. **Economic Calculations**: Converting tariff rates to investment impact scores
+
+### 📋 Next Steps (Immediate Priority)
+
+#### Phase 1: Algorithm Enhancement (Next 1-2 weeks)
+1. **Add TNUoS Component Scoring Function**:
+   ```python
+   def calculate_tnuos_cost_score(project_lat, project_lng, capacity_mw) -> float:
+       # Spatial query to find TNUoS zone
+       # Calculate annual cost impact
+       # Convert to 10-100 scoring scale
+   ```
+
+2. **Update Persona Weightings**: Implement Algorithm 2.2 with TNUoS weights
+
+3. **Integrate Spatial Queries**: 
+   - PostGIS ST_Within() queries to match projects to TNUoS zones
+   - Batch processing for performance optimization
+
+#### Phase 2: Frontend Enhancement (Next 2-3 weeks)
+1. **Component Breakdown Updates**:
+   - Add "Transmission Costs" to scoring displays
+   - Show annual cost impact in project popups: "Est. Annual TNUoS: £X,XXX"
+   - **Note**: TNUoS zones remain as background visualization only (no clickable popups)
+
+2. **Dashboard Integration**:
+   - Enhanced filtering by TNUoS cost ranges
+   - Comparative analysis showing cost impact across personas
+   - Economic impact summaries in AI insights
+
+3. **Unit Standardization**: 
+   - Display all TNUoS rates as "£/kW" (not "£/kW/year" for clarity)
+   - Consistent economic impact formatting throughout UI
+
+#### Phase 3: Advanced Analytics (Next 4-6 weeks)
+1. **Multi-Year Projections**: Historical TNUoS trends and forecasting
+2. **Economic Modeling**: Full lifecycle cost analysis with TNUoS integration
+3. **Comparative Regional Analysis**: Cost optimization recommendations
+4. **AI-Enhanced Insights**: TNUoS-aware investment recommendations
+
+## Technical Implementation Notes
+
+### Database Queries Required
+```sql
+-- Spatial join to determine project TNUoS zones
+SELECT p.*, tz.generation_tariff_pounds_per_kw, tz.zone_id
+FROM renewable_projects p
+JOIN tnuos_zones tz ON ST_Within(
+    ST_SetSRID(ST_MakePoint(p.longitude, p.latitude), 4326),
+    tz.geometry
+);
+```
+
+### Performance Considerations
+- **Spatial Indexing**: Ensure tnuos_zones.geometry has GiST index
+- **Batch Processing**: Extend existing batch proximity calculation for TNUoS
+- **Caching Strategy**: Cache zone lookups for frequently queried projects
+
+### Data Quality Assurance
+- **Validation**: All 27 TNUoS zones have valid tariff data
+- **Coverage**: Verify all UK projects fall within zone boundaries
+- **Currency**: Annual tariff updates (typically April each year)
+
+## Frontend Component Updates
+
+### DynamicSiteMap.tsx ✅ Complete
+- TNUoS zones display as colored polygons
+- Color coding: Green (negative tariffs) → Red (high positive tariffs)
+- Infrastructure toggle in all dashboard pages
+- **Design Decision**: Zones are background visualization only, no clickable popups
+
+### Dashboard Pages ✅ Complete
+- **HyperscalerDashboard.tsx**: TNUoS toggle added to infrastructure layers
+- **UtilityDashboard.tsx**: TNUoS toggle added to infrastructure layers  
+- **SiteMappingTools.tsx**: Already working via DynamicSiteMap internal state
+
+### Pending Frontend Updates
+1. **Project Popups**: Add TNUoS cost information
+2. **Component Scoring Displays**: Include transmission costs breakdown
+3. **Filter Controls**: TNUoS cost range filtering
+4. **Economic Impact Cards**: Annual cost summaries per persona
+
+## Business Impact Analysis
+
+### Before TNUoS Integration
+Investment scoring focused on technical feasibility and basic infrastructure proximity without considering operational transmission costs.
+
+### After TNUoS Integration
+Investment decisions now incorporate:
+- **Real Operational Costs**: £766k/year difference between regions for 50MW projects
+- **Persona-Specific Impact**: Hyperscalers weight transmission costs heavily (15%), edge computing less so (7%)
+- **Economic Optimization**: Sites in South England score higher due to negative transmission charges
+- **Regional Strategy**: Clear economic incentives for southern vs northern development
+
+### Expected Scoring Changes
+- **North Scotland Projects**: Expect 0.5-1.5 point decreases in investment ratings
+- **South England Projects**: Expect 0.3-0.8 point increases in investment ratings  
+- **Persona Differentiation**: Hyperscaler ratings more sensitive to TNUoS than edge computing ratings
+
+## Quality Assurance & Testing
+
+### Algorithm Testing Required
+1. **Scoring Validation**: Verify expensive zones score lower, cheap zones score higher
+2. **Persona Sensitivity**: Confirm hyperscalers react more strongly to TNUoS costs than edge computing
+3. **Economic Accuracy**: Validate annual cost calculations match National Grid tariffs
+4. **Boundary Testing**: Ensure all UK projects correctly assigned to TNUoS zones
+
+### Performance Testing
+- **Spatial Query Performance**: <500ms for batch TNUoS zone lookups
+- **API Response Time**: Enhanced endpoints maintain <2s response times
+- **Map Rendering**: TNUoS polygon overlay doesn't impact map performance
+
+## Risk Assessment
+
+### Technical Risks
+- **Spatial Query Performance**: Large polygon geometries may slow queries
+  - *Mitigation*: Proper indexing and query optimization
+- **Data Currency**: TNUoS rates change annually
+  - *Mitigation*: Automated annual data refresh pipeline
+
+### Business Risks  
+- **Algorithm Complexity**: Adding 7th component increases scoring complexity
+  - *Mitigation*: Comprehensive testing and clear component explanations
+- **User Confusion**: Economic vs technical scoring balance
+  - *Mitigation*: Clear UI explanations of transmission cost impact
+
+## Development Team Requirements
+
+### Immediate (Next 2 weeks)
+- **Backend Developer**: Implement spatial queries and Algorithm 2.2
+- **Database Engineer**: Optimize spatial indexing and query performance
+- **QA Engineer**: Test economic calculations and scoring accuracy
+
+### Medium Term (Next 4-6 weeks)
+- **Frontend Developer**: Enhanced UI components for TNUoS data display
+- **UX Designer**: Economic impact visualization design
+- **Data Analyst**: Validate scoring changes make business sense
+
+## Success Metrics
+
+### Technical Metrics
+- All 100+ renewable projects correctly assigned to TNUoS zones
+- API performance maintains <2s response times with TNUoS integration
+- Scoring algorithm produces economically sensible investment ratings
+
+### Business Metrics
+- Investment ratings better correlate with actual project economics
+- User engagement with TNUoS cost information in dashboards
+- Reduced time-to-decision for location-dependent investment analysis
+
+This enhanced platform now provides the UK's most comprehensive renewable energy investment analysis, combining technical feasibility assessment with real transmission cost economics across multiple data center deployment personas.
 This roadmap balances immediate user value delivery with long-term platform capability building, while managing technical risk and resource constraints.
