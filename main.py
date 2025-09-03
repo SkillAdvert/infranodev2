@@ -1148,6 +1148,43 @@ async def get_fiber_cables():
     
     return {"type": "FeatureCollection", "features": features}
 
+@app.get("/api/infrastructure/tnuos")
+async def get_tnuos_zones():
+    try:
+        # Query TNUoS zones with current tariff year
+        response = supabase.table("tnuos_zones").select("*").eq("tariff_year", "2024-25").execute()
+        
+        if not response.data:
+            return {"type": "FeatureCollection", "features": []}
+        
+        features = []
+        for zone in response.data:
+            if zone.get('geometry'):
+                feature = {
+                    "type": "Feature",
+                    "properties": {
+                        "zone_id": zone.get('zone_id'),
+                        "zone_name": zone.get('zone_name'),
+                        "tariff_pounds_per_kw": zone.get('generation_tariff_pounds_per_kw'),
+                        "tariff_year": zone.get('tariff_year'),
+                        "effective_from": zone.get('effective_from')
+                    },
+                    "geometry": json.loads(zone.get('geometry'))
+                }
+                features.append(feature)
+        
+        return {
+            "type": "FeatureCollection",
+            "features": features,
+            "metadata": {
+                "total_zones": len(features),
+                "tariff_year": "2024-25",
+                "description": "TNUoS Generation Zones with current tariffs"
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching TNUoS data: {str(e)}")
+        
 @app.get("/api/infrastructure/ixp")
 async def get_internet_exchanges():
     """Get internet exchange points for the map"""
@@ -1282,3 +1319,4 @@ async def compare_scoring_systems(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
