@@ -1016,10 +1016,7 @@ async def get_enhanced_geojson(
                 "good": "7.0-7.9",
                 "above_average": "6.0-6.9",
                 "average": "5.0-5.9",
-                "below_average": "4.0-4.9",
-                "poor": "3.0-3.9",
-                "very_poor": "2.0-2.9",
-                "bad": "1.0-1.9"
+                "below_average": "4.0-4.9",st
             }
         }
     }
@@ -1159,9 +1156,14 @@ async def get_tnuos_zones():
             continue
             
         try:
+            # Handle geometry - it might be a string or already parsed
+            geometry = zone['geometry']
+            if isinstance(geometry, str):
+                geometry = json.loads(geometry)
+            
             features.append({
                 "type": "Feature",
-                "geometry": json.loads(zone['geometry']),
+                "geometry": geometry,
                 "properties": {
                     "zone_id": zone.get('zone_id'),
                     "zone_name": zone.get('zone_name'),
@@ -1172,7 +1174,7 @@ async def get_tnuos_zones():
                 }
             })
         except Exception as e:
-            print(f"Error processing TNUoS zone: {e}")
+            print(f"Error processing TNUoS zone {zone.get('zone_id', 'unknown')}: {e}")
             continue
     
     return {"type": "FeatureCollection", "features": features}
@@ -1311,5 +1313,6 @@ async def compare_scoring_systems(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
