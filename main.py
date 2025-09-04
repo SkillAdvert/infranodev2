@@ -861,7 +861,7 @@ async def score_user_sites(
 
 @app.get("/api/projects/enhanced")
 async def get_enhanced_geojson(
-    limit: int = Query(50, description="Number of projects to process"),
+    limit: int = Query(150, description="Number of projects to process"),
     persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring")
 ):
     """ENHANCED BATCH VERSION: Get projects with persona-based or renewable energy scoring"""
@@ -1313,6 +1313,7 @@ async def compare_scoring_systems(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
