@@ -1379,7 +1379,45 @@ async def compare_scoring_systems(
             'substation_score': 0, 'transmission_score': 0, 'fiber_score': 0,
             'ixp_score': 0, 'water_score': 0, 'nearest_distances': {}
         }
-
+        # OLD SYSTEM (renewable energy scoring)
+        renewable_rating = calculate_enhanced_investment_rating(project, dummy_proximity)
+        
+        # NEW SYSTEM (persona-based scoring)
+        persona_rating = calculate_persona_weighted_score(project, dummy_proximity, persona)
+        
+        comparison.append({
+            "site_name": project.get('site_name'),
+            "capacity_mw": project.get('capacity_mw'),
+            "technology_type": project.get('technology_type'),
+            "renewable_energy_system": {
+                "investment_rating": renewable_rating['investment_rating'],
+                "rating_description": renewable_rating['rating_description'],
+                "color": renewable_rating['color_code']
+            },
+            "persona_system": {
+                "persona": persona,
+                "investment_rating": persona_rating['investment_rating'],
+                "rating_description": persona_rating['rating_description'],
+                "color": persona_rating['color_code'],
+                "component_scores": persona_rating['component_scores'],
+                "weighted_contributions": persona_rating['weighted_contributions']
+            }
+        })
+    
+    return {
+        "comparison": comparison,
+        "summary": {
+            "renewable_system": "Traditional renewable energy scoring (capacity, stage, tech)",
+            "persona_system": f"{persona} data center scoring with custom weightings",
+            "persona_weights": PERSONA_WEIGHTS[persona],
+            "migration_benefits": [
+                "Scoring tailored to specific data center requirements",
+                "Transparent component breakdown showing why sites score differently", 
+                "Infrastructure priorities matching real deployment needs",
+                "Better investment decision making for specific use cases"
+            ]
+        }
+    }
 @app.get("/api/projects/customer-match")
 async def get_customer_match_projects(
     target_customer: PersonaType = Query("hyperscaler", description="Target customer persona"),
@@ -1443,49 +1481,12 @@ async def get_customer_match_projects(
             "projects_after_capacity_filtering": len(filtered_projects)
         }
     }
-        # OLD SYSTEM (renewable energy scoring)
-        renewable_rating = calculate_enhanced_investment_rating(project, dummy_proximity)
-        
-        # NEW SYSTEM (persona-based scoring)
-        persona_rating = calculate_persona_weighted_score(project, dummy_proximity, persona)
-        
-        comparison.append({
-            "site_name": project.get('site_name'),
-            "capacity_mw": project.get('capacity_mw'),
-            "technology_type": project.get('technology_type'),
-            "renewable_energy_system": {
-                "investment_rating": renewable_rating['investment_rating'],
-                "rating_description": renewable_rating['rating_description'],
-                "color": renewable_rating['color_code']
-            },
-            "persona_system": {
-                "persona": persona,
-                "investment_rating": persona_rating['investment_rating'],
-                "rating_description": persona_rating['rating_description'],
-                "color": persona_rating['color_code'],
-                "component_scores": persona_rating['component_scores'],
-                "weighted_contributions": persona_rating['weighted_contributions']
-            }
-        })
-    
-    return {
-        "comparison": comparison,
-        "summary": {
-            "renewable_system": "Traditional renewable energy scoring (capacity, stage, tech)",
-            "persona_system": f"{persona} data center scoring with custom weightings",
-            "persona_weights": PERSONA_WEIGHTS[persona],
-            "migration_benefits": [
-                "Scoring tailored to specific data center requirements",
-                "Transparent component breakdown showing why sites score differently", 
-                "Infrastructure priorities matching real deployment needs",
-                "Better investment decision making for specific use cases"
-            ]
-        }
-    }
+
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
