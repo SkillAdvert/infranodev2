@@ -25,35 +25,61 @@ print(f"✅ SUPABASE_KEY exists: {bool(SUPABASE_KEY)}")
 PersonaType = Literal["hyperscaler", "colocation", "edge_computing"]
 
 # Persona weight definitions
+
+# Updated persona weights with LCOE
 PERSONA_WEIGHTS = {
     "hyperscaler": {
-        "capacity": 0.35,              # High capacity critical for large deployments
-        "development_stage": 0.25,     # Operational sites preferred for quick deployment
-        "technology": 0.10,            # Technology type less critical
-        "grid_infrastructure": 0.20,   # Reliable power essential
-        "digital_infrastructure": 0.05, # Fiber important but not critical
-        "water_resources": 0.05        # Water for cooling systems
+        "capacity": 0.25,                    # Reduced from 0.30
+        "development_stage": 0.20,           # Unchanged
+        "technology": 0.08,                  # Unchanged  
+        "grid_infrastructure": 0.17,         # Unchanged
+        "digital_infrastructure": 0.05,      # Unchanged
+        "water_resources": 0.05,             # Unchanged
+        "tnuos_transmission_costs": 0.12,    # Reduced from 0.15
+        "lcoe_resource_quality": 0.08        # NEW - 8% weight
     },
     
     "colocation": {
-        "capacity": 0.15,              # Smaller capacity needs
-        "development_stage": 0.20,     # Flexible on development stage
-        "technology": 0.10,            # Technology type flexible
-        "grid_infrastructure": 0.25,   # Power reliability critical
-        "digital_infrastructure": 0.25, # Connectivity is key for colocation
-        "water_resources": 0.05        # Basic cooling needs
+        "capacity": 0.13,                    # Reduced from 0.15
+        "development_stage": 0.18,           # Reduced from 0.20
+        "technology": 0.08,                  # Unchanged
+        "grid_infrastructure": 0.22,         # Unchanged
+        "digital_infrastructure": 0.22,      # Unchanged
+        "water_resources": 0.05,             # Unchanged
+        "tnuos_transmission_costs": 0.10,    # Reduced from 0.12
+        "lcoe_resource_quality": 0.02        # NEW - 2% weight (less important)
     },
     
     "edge_computing": {
-        "capacity": 0.10,              # Small capacity requirements
-        "development_stage": 0.30,     # Quick deployment critical
-        "technology": 0.15,            # Technology flexibility important
-        "grid_infrastructure": 0.15,   # Moderate power needs
-        "digital_infrastructure": 0.25, # Low latency connectivity critical
-        "water_resources": 0.05        # Minimal cooling needs
+        "capacity": 0.09,                    # Unchanged
+        "development_stage": 0.26,           # Reduced from 0.28
+        "technology": 0.14,                  # Unchanged
+        "grid_infrastructure": 0.14,         # Unchanged
+        "digital_infrastructure": 0.23,      # Unchanged
+        "water_resources": 0.05,             # Unchanged
+        "tnuos_transmission_costs": 0.06,    # Reduced from 0.07
+        "lcoe_resource_quality": 0.03        # NEW - 3% weight
     }
 }
 
+# Capacity filtering ranges for persona-based technology filtering
+PERSONA_CAPACITY_RANGES = {
+    "edge_computing": {"min": 0, "max": 5},      # <5MW
+    "colocation": {"min": 5, "max": 30},         # 5-30MW  
+    "hyperscaler": {"min": 50, "max": 1000}     # 50MW+
+}
+
+# LCOE configuration - easy to edit in future
+LCOE_CONFIG = {
+    "baseline_score": 75.0,  # 75/100 for £50/MWh baseline
+    "default_lcoe_pounds_per_mwh": 50.0,
+    # Future: zone-specific LCOE rates
+    "zone_specific_rates": {
+        # "GZ1": 45.0,  # Scotland - lower costs
+        # "GZ27": 55.0, # South England - higher costs
+        # Can be configured later
+    }
+}
 # User site data model
 class UserSite(BaseModel):
     site_name: str
@@ -232,6 +258,22 @@ def calculate_water_resources_score(proximity_scores: Dict) -> float:
     elif water_score > 2: return 60.0        # Basic water access
     else: return base_score                   # Air cooling sufficient
 
+def calculate_lcoe_score(project_lat: float, project_lng: float, technology_type: str) -> float:
+    """Score LCOE resource quality on 10-100 scale"""
+    # For now: flat baseline score across all zones and technologies
+    # Future: zone-specific and technology-specific LCOE calculations
+    
+    base_score = LCOE_CONFIG["baseline_score"]  # 75.0 for £50/MWh
+    
+    # Future enhancement: vary by TNUoS zone
+    # zone_rates = LCOE_CONFIG["zone_specific_rates"]
+    # if zone_id in zone_rates:
+    #     zone_lcoe = zone_rates[zone_id]
+    #     # Convert LCOE to score (lower LCOE = higher score)
+    #     base_score = 100 - (zone_lcoe - 40) * 2  # Example calculation
+    
+    return min(100.0, max(10.0, base_score))
+    
 # ==================== PERSONA-BASED SCORING ====================
 
 def calculate_persona_weighted_score(
@@ -254,17 +296,23 @@ def calculate_persona_weighted_score(
     grid_score = calculate_grid_infrastructure_score(proximity_scores)
     digital_score = calculate_digital_infrastructure_score(proximity_scores)
     water_score = calculate_water_resources_score(proximity_scores)
+    lcoe_score = calculate_lcoe_score(
+        project.get('latitude', 0), 
+        project.get('longitude', 0), 
+        project.get('technology_type', '')
+    )
     
     # Apply persona-specific weights
+
     weighted_score = (
         capacity_score * weights["capacity"] +
         stage_score * weights["development_stage"] +
         tech_score * weights["technology"] +
         grid_score * weights["grid_infrastructure"] +
         digital_score * weights["digital_infrastructure"] +
-        water_score * weights["water_resources"]
+        water_score * weights["water_resources"] +
+        lcoe_score * weights["lcoe_resource_quality"]
     )
-    
     # Ensure score stays within 10-100 range
     final_internal_score = min(100.0, max(10.0, weighted_score))
     
@@ -282,24 +330,28 @@ def calculate_persona_weighted_score(
         "color_code": color,
         
         # Component breakdown for transparency
+
         "component_scores": {
             "capacity": round(capacity_score, 1),
             "development_stage": round(stage_score, 1),
             "technology": round(tech_score, 1),
             "grid_infrastructure": round(grid_score, 1),
             "digital_infrastructure": round(digital_score, 1),
-            "water_resources": round(water_score, 1)
+            "water_resources": round(water_score, 1),
+            "lcoe_resource_quality": round(lcoe_score, 1)
         },
         
-        # Weighted contributions
+        # Weighted contributions (now includes LCOE)
         "weighted_contributions": {
             "capacity": round(capacity_score * weights["capacity"], 1),
             "development_stage": round(stage_score * weights["development_stage"], 1),
             "technology": round(tech_score * weights["technology"], 1),
             "grid_infrastructure": round(grid_score * weights["grid_infrastructure"], 1),
             "digital_infrastructure": round(digital_score * weights["digital_infrastructure"], 1),
-            "water_resources": round(water_score * weights["water_resources"], 1)
+            "water_resources": round(water_score * weights["water_resources"], 1),
+            "lcoe_resource_quality": round(lcoe_score * weights["lcoe_resource_quality"], 1)
         },
+       
         
         # Persona information
         "persona": persona,
@@ -428,6 +480,58 @@ def calculate_enhanced_investment_rating(project: Dict, proximity_scores: Dict, 
         "internal_total_score": round(total_internal_score, 1),
         "scoring_methodology": "Traditional renewable energy scoring (10-100 internal, 1.0-10.0 display)"
     }
+    # ==================== BIDIRECTIONAL CUSTOMER MATCHING ====================
+
+def calculate_best_customer_match(project: Dict, proximity_scores: Dict) -> Dict:
+    """
+    For Power Developers: Test project against all customer personas
+    Returns ranked customer matches with scores
+    """
+    
+    customer_scores = {}
+    
+    # Test against all three customer personas
+    for persona in ["hyperscaler", "colocation", "edge_computing"]:
+        # Check if project meets capacity requirements for this persona
+        capacity_mw = project.get('capacity_mw', 0)
+        capacity_range = PERSONA_CAPACITY_RANGES[persona]
+        
+        if capacity_range["min"] <= capacity_mw <= capacity_range["max"]:
+            # Project fits capacity range - calculate full score
+            scoring_result = calculate_persona_weighted_score(project, proximity_scores, persona)
+            customer_scores[persona] = scoring_result["investment_rating"]
+        else:
+            # Project doesn't fit capacity range - low score
+            customer_scores[persona] = 2.0  # Below average for capacity mismatch
+    
+    # Find best customer match
+    best_customer = max(customer_scores.keys(), key=lambda k: customer_scores[k])
+    best_score = customer_scores[best_customer]
+    
+    return {
+        "best_customer_match": best_customer,
+        "customer_match_scores": customer_scores,
+        "best_match_score": round(best_score, 1),
+        "capacity_mw": project.get('capacity_mw', 0),
+        "suitable_customers": [
+            persona for persona, score in customer_scores.items() 
+            if score >= 6.0  # Above average threshold
+        ]
+    }
+
+def filter_projects_by_persona_capacity(projects: List[Dict], persona: PersonaType) -> List[Dict]:
+    """
+    Filter projects by capacity range for selected persona
+    """
+    capacity_range = PERSONA_CAPACITY_RANGES[persona]
+    
+    filtered_projects = []
+    for project in projects:
+        capacity_mw = project.get('capacity_mw', 0)
+        if capacity_range["min"] <= capacity_mw <= capacity_range["max"]:
+            filtered_projects.append(project)
+    
+    return filtered_projects
 
 # ==================== BATCH PROXIMITY CALCULATION ====================
 
@@ -862,7 +966,8 @@ async def score_user_sites(
 @app.get("/api/projects/enhanced")
 async def get_enhanced_geojson(
     limit: int = Query(150, description="Number of projects to process"),
-    persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring")
+    persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring"),
+    apply_capacity_filter: bool = Query(True, description="Filter projects by persona capacity requirements")
 ):
     """ENHANCED BATCH VERSION: Get projects with persona-based or renewable energy scoring"""
     start_time = time.time()
@@ -873,6 +978,12 @@ async def get_enhanced_geojson(
     try:
         projects = await query_supabase(f"renewable_projects?select=*&limit={limit}")
         print(f"✅ Loaded {len(projects)} projects from database")
+        # Apply capacity filtering if persona is specified and filtering is enabled
+        if persona and apply_capacity_filter:
+            original_count = len(projects)
+            projects = filter_projects_by_persona_capacity(projects, persona)
+            print(f"🎯 Filtered to {len(projects)} projects for {persona} (was {original_count})")
+        
     except Exception as e:
         print(f"❌ Database error: {e}")
         return {"error": "Database connection failed", "type": "FeatureCollection", "features": []}
@@ -922,7 +1033,6 @@ async def get_enhanced_geojson(
                     'ixp_score': 0, 'water_score': 0, 'total_proximity_bonus': 0,
                     'nearest_distances': {}
                 }
-            
             # Use persona-based scoring if persona specified, otherwise renewable energy scoring
             if persona:
                 rating_result = calculate_persona_weighted_score(project, proximity_scores, persona)
@@ -1269,7 +1379,70 @@ async def compare_scoring_systems(
             'substation_score': 0, 'transmission_score': 0, 'fiber_score': 0,
             'ixp_score': 0, 'water_score': 0, 'nearest_distances': {}
         }
+
+@app.get("/api/projects/customer-match")
+async def get_customer_match_projects(
+    target_customer: PersonaType = Query("hyperscaler", description="Target customer persona"),
+    limit: int = Query(100, description="Number of projects to analyze")
+):
+    """Get projects with customer suitability analysis for Power Developers"""
+    
+    projects = await query_supabase(f"renewable_projects?select=*&limit={limit}")
+    
+    # Filter projects by capacity range for target customer
+    filtered_projects = filter_projects_by_persona_capacity(projects, target_customer)
+    
+    # Calculate customer match scores for filtered projects
+    customer_analysis = []
+    
+    for project in filtered_projects:
+        if not project.get('longitude') or not project.get('latitude'):
+            continue
         
+        # Dummy proximity for now (would use real proximity calculation in production)
+        dummy_proximity = {
+            'substation_score': 0, 'transmission_score': 0, 'fiber_score': 0,
+            'ixp_score': 0, 'water_score': 0, 'nearest_distances': {}
+        }
+        
+        # Get customer match analysis
+        customer_match = calculate_best_customer_match(project, dummy_proximity)
+        
+        # Get detailed scoring for target customer
+        target_scoring = calculate_persona_weighted_score(project, dummy_proximity, target_customer)
+        
+        customer_analysis.append({
+            "project_id": project.get('ref_id'),
+            "site_name": project.get('site_name'),
+            "technology_type": project.get('technology_type'),
+            "capacity_mw": project.get('capacity_mw'),
+            "county": project.get('county'),
+            "coordinates": [project.get('longitude'), project.get('latitude')],
+            
+            # Customer matching results
+            "target_customer": target_customer,
+            "target_customer_score": target_scoring["investment_rating"],
+            "target_customer_rating": target_scoring["rating_description"],
+            "best_customer_match": customer_match["best_customer_match"],
+            "customer_match_scores": customer_match["customer_match_scores"],
+            "suitable_customers": customer_match["suitable_customers"],
+            
+            # Component breakdown for target customer
+            "component_scores": target_scoring["component_scores"],
+            "weighted_contributions": target_scoring["weighted_contributions"]
+        })
+    
+    return {
+        "target_customer": target_customer,
+        "projects_analyzed": len(customer_analysis),
+        "capacity_range": PERSONA_CAPACITY_RANGES[target_customer],
+        "projects": customer_analysis,
+        "metadata": {
+            "algorithm_version": "2.3 - Bidirectional Customer Matching",
+            "total_projects_before_filtering": len(projects),
+            "projects_after_capacity_filtering": len(filtered_projects)
+        }
+    }
         # OLD SYSTEM (renewable energy scoring)
         renewable_rating = calculate_enhanced_investment_rating(project, dummy_proximity)
         
@@ -1313,6 +1486,7 @@ async def compare_scoring_systems(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
