@@ -545,7 +545,7 @@ async def calculate_proximity_scores_batch(projects: List[Dict]) -> List[Dict]:
     try:
         substations = await query_supabase("substations?select=*")
         transmission_lines = await query_supabase("transmission_lines?select=*")
-        fiber_cables = await query_supabase("fiber_cables?select=*")
+        fiber_cables = await query_supabase("fiber_cables?select=*&limit=200")
         internet_exchange_points = await query_supabase("internet_exchange_points?select=*")
         water_resources = await query_supabase("water_resources?select=*")
         
@@ -1486,6 +1486,7 @@ async def get_customer_match_projects(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
