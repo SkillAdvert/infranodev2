@@ -182,7 +182,8 @@ def get_rating_description(score_out_of_100: float) -> str:
 
 def calculate_capacity_component_score(capacity_mw: float) -> float:
     """Score capacity on 10-100 scale based on data center requirements"""
-    if capacity_mw >= 100: return 100.0      # Hyperscale requirements
+    if capacity_mw >= 250: return 125.0      # Hyperscale requirements
+    elif capacity_mw >= 100: return 100
     elif capacity_mw >= 50: return 85.0      # Large enterprise
     elif capacity_mw >= 25: return 70.0      # Medium enterprise  
     elif capacity_mw >= 10: return 55.0      # Small enterprise
@@ -193,20 +194,20 @@ def calculate_capacity_component_score(capacity_mw: float) -> float:
 def calculate_development_stage_score(status: str) -> float:
     """Score development stage on 10-100 scale"""
     status = str(status).lower()
-    if 'operational' in status: return 100.0         # Immediate deployment
-    elif 'construction' in status: return 85.0       # Near-term deployment
-    elif 'granted' in status: return 70.0           # Planning approved
+    if 'operational' in status: return 50.0         # Possible grid headroom
+    elif 'construction' in status: return 70       # Near-term deployment
+    elif 'granted' in status: return 85          # Planning approved
     elif 'submitted' in status: return 45.0         # Planning pending
-    elif 'planning' in status: return 25.0          # Early stage
+    elif 'planning' in status: return 30          # Early stage
     else: return 10.0                               # Unknown/conceptual
 
 def calculate_technology_score(tech_type: str) -> float:
     """Score technology type on 10-100 scale for data center suitability"""
     tech = str(tech_type).lower()
-    if 'solar' in tech: return 90.0          # Clean, predictable power
-    elif 'battery' in tech: return 95.0      # Grid stability, peak shaving
-    elif 'wind' in tech: return 75.0         # Variable but clean
-    elif 'hybrid' in tech: return 85.0       # Balanced approach
+    if 'solar' in tech: return 70         # Clean, predictable power
+    elif 'battery' in tech: return 80      # Grid stability, peak shaving
+    elif 'wind' in tech: return 90        # Variable but clean
+    elif 'hybrid' in tech: return 95      # Balanced approach
     else: return 60.0                        # Other technologies
 
 def calculate_grid_infrastructure_score(proximity_scores: Dict) -> float:
@@ -218,13 +219,13 @@ def calculate_grid_infrastructure_score(proximity_scores: Dict) -> float:
     grid_score = 10.0  # Base score
     
     # Substations (primary connection)
-    if substation_score > 40: grid_score += 45.0      # Excellent proximity
-    elif substation_score > 25: grid_score += 30.0    # Good proximity
+    if substation_score > 30: grid_score += 50.0      # Excellent proximity
+    elif substation_score > 20: grid_score += 30.0    # Good proximity
     elif substation_score > 10: grid_score += 15.0    # Moderate proximity
     
     # Transmission lines (backup/alternative)
-    if transmission_score > 30: grid_score += 30.0    # Direct line access
-    elif transmission_score > 15: grid_score += 15.0  # Near transmission
+    if transmission_score > 30: grid_score += 40.0    # Direct line access
+    elif transmission_score > 15: grid_score += 20.0  # Near transmission
     
     return min(100.0, grid_score)
 
@@ -1486,6 +1487,7 @@ async def get_customer_match_projects(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
