@@ -360,7 +360,85 @@ def calculate_persona_weighted_score(
         "internal_total_score": round(final_internal_score, 1),
         "nearest_infrastructure": proximity_scores.get('nearest_distances', {})
     }
-
+def calculate_custom_weighted_score(
+    project: Dict, 
+    proximity_scores: Dict, 
+    custom_weights: Dict[str, float]
+) -> Dict:
+    """
+    Calculate investment rating based on user-defined custom weightings
+    
+    Returns scores on 10-100 internal scale, displayed as 1.0-10.0
+    """
+    
+    # Calculate component scores (10-100 scale) - same as persona scoring
+    capacity_score = calculate_capacity_component_score(project.get('capacity_mw', 0))
+    stage_score = calculate_development_stage_score(project.get('development_status_short', ''))
+    tech_score = calculate_technology_score(project.get('technology_type', ''))
+    grid_score = calculate_grid_infrastructure_score(proximity_scores)
+    digital_score = calculate_digital_infrastructure_score(proximity_scores)
+    water_score = calculate_water_resources_score(proximity_scores)
+    lcoe_score = calculate_lcoe_score(
+        project.get('latitude', 0), 
+        project.get('longitude', 0), 
+        project.get('technology_type', '')
+    )
+    
+    # Apply custom weights
+    weighted_score = (
+        capacity_score * custom_weights.get("capacity", 0) +
+        stage_score * custom_weights.get("development_stage", 0) +
+        tech_score * custom_weights.get("technology", 0) +
+        grid_score * custom_weights.get("grid_infrastructure", 0) +
+        digital_score * custom_weights.get("digital_infrastructure", 0) +
+        water_score * custom_weights.get("water_resources", 0) +
+        lcoe_score * custom_weights.get("lcoe_resource_quality", 0)
+    )
+    
+    # Ensure score stays within 10-100 range
+    final_internal_score = min(100.0, max(10.0, weighted_score))
+    
+    # Convert to display scale (1.0-10.0)
+    display_rating = final_internal_score / 10.0
+    
+    # Get color and description
+    color = get_color_from_score(final_internal_score)
+    description = get_rating_description(final_internal_score)
+    
+    return {
+        # Display scores
+        "investment_rating": round(display_rating, 1),
+        "rating_description": description,
+        "color_code": color,
+        
+        # Component breakdown for transparency
+        "component_scores": {
+            "capacity": round(capacity_score, 1),
+            "development_stage": round(stage_score, 1),
+            "technology": round(tech_score, 1),
+            "grid_infrastructure": round(grid_score, 1),
+            "digital_infrastructure": round(digital_score, 1),
+            "water_resources": round(water_score, 1),
+            "lcoe_resource_quality": round(lcoe_score, 1)
+        },
+        
+        # Weighted contributions with custom weights
+        "weighted_contributions": {
+            "capacity": round(capacity_score * custom_weights.get("capacity", 0), 1),
+            "development_stage": round(stage_score * custom_weights.get("development_stage", 0), 1),
+            "technology": round(tech_score * custom_weights.get("technology", 0), 1),
+            "grid_infrastructure": round(grid_score * custom_weights.get("grid_infrastructure", 0), 1),
+            "digital_infrastructure": round(digital_score * custom_weights.get("digital_infrastructure", 0), 1),
+            "water_resources": round(water_score * custom_weights.get("water_resources", 0), 1),
+            "lcoe_resource_quality": round(lcoe_score * custom_weights.get("lcoe_resource_quality", 0), 1)
+        },
+        
+        # Custom weights information
+        "persona": "custom",
+        "persona_weights": custom_weights,
+        "internal_total_score": round(final_internal_score, 1),
+        "nearest_infrastructure": proximity_scores.get('nearest_distances', {})
+    }
 # ==================== TRADITIONAL RENEWABLE ENERGY SCORING ====================
 
 def calculate_base_investment_score_renewable(project: Dict) -> float:
@@ -968,12 +1046,27 @@ async def score_user_sites(
 async def get_enhanced_geojson(
     limit: int = Query(150, description="Number of projects to process"),
     persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring"),
-    apply_capacity_filter: bool = Query(True, description="Filter projects by persona capacity requirements")
+    apply_capacity_filter: bool = Query(True, description="Filter projects by persona capacity requirements"),
+    custom_weights: Optional[str] = Query(None, description="JSON string of custom weights (overrides persona)")
 ):
     """ENHANCED BATCH VERSION: Get projects with persona-based or renewable energy scoring"""
     start_time = time.time()
     
     scoring_mode = "persona-based" if persona else "renewable energy"
+    # Parse custom weights if provided
+    parsed_custom_weights = None
+    if custom_weights:
+        try:
+            parsed_custom_weights = json.loads(custom_weights)
+            # Validate and normalize weights
+            total = sum(parsed_custom_weights.values())
+            if abs(total - 1.0) > 0.01:
+                # Auto-normalize to sum to 1.0
+                parsed_custom_weights = {k: v/total for k, v in parsed_custom_weights.items()}
+        except (json.JSONDecodeError, AttributeError):
+            parsed_custom_weights = None
+    
+    scoring_mode = "custom weights" if parsed_custom_weights else ("persona-based" if persona else "renewable energy")
     print(f"🚀 ENHANCED ENDPOINT WITH {scoring_mode.upper()} SCORING - Processing {limit} projects...")
     
     try:
@@ -1034,11 +1127,13 @@ async def get_enhanced_geojson(
                     'ixp_score': 0, 'water_score': 0, 'total_proximity_bonus': 0,
                     'nearest_distances': {}
                 }
-            # Use persona-based scoring if persona specified, otherwise renewable energy scoring
-            if persona:
-                rating_result = calculate_persona_weighted_score(project, proximity_scores, persona)
-            else:
-                rating_result = calculate_enhanced_investment_rating(project, proximity_scores)
+                 # Use custom weights scoring if provided, otherwise persona-based or renewable energy scoring
+                if parsed_custom_weights:
+                    rating_result = calculate_custom_weighted_score(project, proximity_scores, parsed_custom_weights)
+                elif persona:
+                    rating_result = calculate_persona_weighted_score(project, proximity_scores, persona)
+                else:
+                    rating_result = calculate_enhanced_investment_rating(project, proximity_scores)
             
             features.append({
                 "type": "Feature",
@@ -1487,6 +1582,7 @@ async def get_customer_match_projects(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
