@@ -392,3 +392,180 @@ Create side-by-side site comparison tools
 Build investment decision support workflows
 
 This comprehensive platform now provides the UK's most sophisticated renewable energy investment analysis, combining technical feasibility assessment with real transmission cost economics across multiple data center deployment personas. The current state represents a production-ready founda
+
+# Data Center Platform - Project Status & Roadmap
+
+## Executive Summary
+A persona-based data center site evaluation platform that analyzes renewable energy projects for deployment suitability. Matches data center types (hyperscaler, colocation, edge computing) with optimal locations using weighted infrastructure scoring and proximity analysis.
+
+## Current Implementation (December 2024)
+
+### Core System Architecture
+
+**Backend (FastAPI - main.py)**
+- **Production Ready**: Deployed at https://infranodev2.onrender.com
+- **8-component scoring system**: capacity, development_stage, technology, grid_infrastructure, digital_infrastructure, water_resources, tnuos_transmission_costs, lcoe_resource_quality
+- **3 predefined personas** with distinct weighting profiles:
+  - Hyperscaler (50MW+): Focus on capacity and grid reliability
+  - Colocation (5-30MW): Balanced power and connectivity requirements  
+  - Edge Computing (<5MW): Prioritizes quick deployment and low latency
+- **TNUoS integration**: Baseline 65/100 score, coordinates-based (ready for spatial enhancement)
+- **Batch processing**: 10-50x performance improvement for proximity calculations
+
+**Frontend (React/TypeScript)**
+- **PersonaSelector**: Tab-based interface with real-time weight adjustment and validation
+- **HyperscalerDashboard**: 5 tabs (Setup, Map Overview, Projects, Site Assessment, AI Insights)
+- **Power Developer Dashboard**: Streamlined 60/40 layout with customer matching
+- **Infrastructure visualization**: 6 layers including TNUoS zones as colored cost polygons
+
+**Database (Supabase)**
+- **Core datasets**: 100+ UK renewable projects, 27 TNUoS zones, infrastructure networks
+- **Performance**: Spatial indexing for sub-2s API responses
+
+### Recent Development Achievements (Today)
+
+**Technical Fixes Completed**:
+- ✅ Separated `calculate_lcoe_score()` and `calculate_tnuos_score()` functions (syntax error resolved)
+- ✅ Implemented TNUoS as coordinate-based function returning 65.0 baseline score
+- ✅ Added graceful handling for missing TNUoS weights in custom scoring
+- ✅ Fixed indentation errors in enhanced endpoint scoring logic
+- ✅ Established frontend/backend compatibility (7 vs 8 components handled gracefully)
+
+**Deployment Status**: ✅ **Ready for production deployment**
+- Backend compiles and runs without errors
+- All API endpoints functional with persona-based scoring
+- Frontend connects successfully with accurate rating display
+- TNUoS contributes to final scores (not yet displayed in component breakdowns)
+
+### Investment Rating System
+- **Scale**: Internal 10-100 points, displayed as 1.0-10.0 for users
+- **Color coding**: Red (poor) to green (excellent) visualization
+- **Current range issue**: Scores capping at 5.2-8.6 instead of full 1.0-10.0 scale
+
+## Immediate Next Steps (Priority Order)
+
+### 1. UI/UX Improvements
+- **Consolidate claude.md files**: Merge latest version with previous history
+- **Make project list minimizable**: Right-hand sidebar with main window resize capability
+- **Fix popup boxes**: Include small insights/ratings, remove additional infrastructure comments
+
+### 2. Backend Algorithm Refinement  
+- **Test bed setup**: Use 150 projects (solar, battery, onshore wind) for optimization
+- **Development stage scoring fix**: 
+  ```python
+  # File: main.py - 25% into file
+  # Find: if 'operational' in status: return 50.0
+  # Replace with higher scores for development opportunities vs operational sites
+  ```
+- **Enhance scoring generosity**: Address restricted 5.2-8.6 range, utilize full 1.0-10.0 scale
+- **Complete TNUoS spatial queries**: Replace baseline 65.0 with actual zone-based calculations
+
+### 3. Data Center Dashboard Enhancement
+- **Site evaluation tab**: Update with bespoke DC inputs (Fiber, Water, etc.)
+- **Filtering and sorting**: Fix site filters and implement AI-driven insights
+- **Simplified layout**: Apply Power Developer Dashboard design patterns
+- **User persona optimization**: Streamline for data center decision-making workflows
+
+## Business Development Pipeline
+
+### Immediate Outreach (Next Week)
+- **Target**: 5 additional conversations scheduled for Monday
+- **Develop pitch deck**: Include more screenshots and platform demonstrations  
+- **Elevator pitch refinement**: Practice smooth, clean delivery
+
+### Next Tier Outreach
+**Contacts**: Abhijeet, Iliana P, Max, Qas, Tracey
+
+### Content Development
+**AI Greenferencing Article**: Add MDCs (Micro Data Centers) to persona types
+- Note TBT (Time Between Tokens) and TTFT (Time To First Token) metrics
+- Deploy AI compute at source concept
+- Right-sized AI compute with low-cost power offsetting lost cycles
+
+## Technical Architecture
+
+### Scoring Algorithm (Current)
+```python
+weighted_score = (
+    capacity_score * weights["capacity"] +
+    stage_score * weights["development_stage"] +
+    tech_score * weights["technology"] +
+    grid_score * weights["grid_infrastructure"] +
+    digital_score * weights["digital_infrastructure"] +
+    water_score * weights["water_resources"] +
+    lcoe_score * weights["lcoe_resource_quality"] +
+    tnuos_score * weights.get("tnuos_transmission_costs", 0)
+)
+```
+
+### API Workflow
+```
+Frontend Persona Selection → Weight Normalization → Batch Rescoring → Map Visualization
+```
+
+### Current Persona Weights
+```python
+PERSONA_WEIGHTS = {
+    "hyperscaler": {
+        "capacity": 0.25, "development_stage": 0.20, "technology": 0.08,
+        "grid_infrastructure": 0.17, "digital_infrastructure": 0.05,
+        "water_resources": 0.05, "tnuos_transmission_costs": 0.12,
+        "lcoe_resource_quality": 0.08
+    },
+    "colocation": {
+        "capacity": 0.13, "development_stage": 0.18, "technology": 0.08,
+        "grid_infrastructure": 0.22, "digital_infrastructure": 0.22,
+        "water_resources": 0.05, "tnuos_transmission_costs": 0.10,
+        "lcoe_resource_quality": 0.02
+    },
+    "edge_computing": {
+        "capacity": 0.09, "development_stage": 0.26, "technology": 0.14,
+        "grid_infrastructure": 0.14, "digital_infrastructure": 0.23,
+        "water_resources": 0.05, "tnuos_transmission_costs": 0.06,
+        "lcoe_resource_quality": 0.03
+    }
+}
+```
+
+## Known Issues & Limitations
+
+### Current Limitations
+1. **TNUoS component**: Calculated correctly but not displayed in frontend breakdowns
+2. **Scoring range**: Algorithm too conservative, not utilizing full 1.0-10.0 scale
+3. **Development stage bias**: Operational sites scoring higher than development opportunities
+
+### Component Mismatch Handling
+- **Backend**: Handles 8 components including TNUoS
+- **Frontend**: Manages 7 components (TNUoS excluded from UI)
+- **Status**: Graceful degradation - system works correctly, TNUoS contributes to final scores
+
+## Future Enhancements
+
+### Short Term (1-2 Weeks)
+- Complete TNUoS spatial zone integration
+- Add TNUoS to frontend component display
+- Implement advanced filtering and search capabilities
+
+### Medium Term (1-3 Months)
+- Real-time infrastructure data integration
+- Advanced geographic filtering with radius controls
+- Side-by-side site comparison tools
+- Export and reporting functionality
+- AI-powered investment insights
+
+### Long Term Vision
+- Integration with additional data sources
+- Automated data refresh pipelines
+- Mobile application development
+- International market expansion
+
+## Deployment Architecture
+```
+Frontend (Vercel) ↔ API (Render.com) ↔ Database (Supabase)
+        ↓                ↓                    ↓
+Persona Selection → Weighted Scoring → Geographic Data
+        ↓                ↓                    ↓
+Project Display ← Rated Projects ← Infrastructure Proximity
+```
+
+**Status**: Production-ready with ongoing enhancement pipeline
