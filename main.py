@@ -263,7 +263,6 @@ def calculate_lcoe_score(project_lat: float, project_lng: float, technology_type
     """Score LCOE resource quality on 10-100 scale"""
     # For now: flat baseline score across all zones and technologies
     # Future: zone-specific and technology-specific LCOE calculations
-    
     base_score = LCOE_CONFIG["baseline_score"]  # 75.0 for £50/MWh
     
     # Future enhancement: vary by TNUoS zone
@@ -271,10 +270,15 @@ def calculate_lcoe_score(project_lat: float, project_lng: float, technology_type
     # if zone_id in zone_rates:
     #     zone_lcoe = zone_rates[zone_id]
     #     # Convert LCOE to score (lower LCOE = higher score)
-    #     base_score = 100 - (zone_lcoe - 40) * 2  # Example calculation
-    
+    #     base_score = 100 - (zone_lcoe - 40) * 2  # Example calculation   
     return min(100.0, max(10.0, base_score))
     
+def calculate_tnuos_score(project_lat: float, project_lng: float) -> float:
+    """Score TNUoS transmission costs on 10-100 scale based on location"""
+    # Simple baseline score for now - represents average UK TNUoS costs
+    # Future: replace with actual spatial query to TNUoS zones table
+    return 65.0  # Moderate score representing typical transmission costs    
+
 # ==================== PERSONA-BASED SCORING ====================
 
 def calculate_persona_weighted_score(
@@ -302,6 +306,10 @@ def calculate_persona_weighted_score(
         project.get('longitude', 0), 
         project.get('technology_type', '')
     )
+    tnuos_score = calculate_tnuos_score(
+    project.get('latitude', 0), 
+    project.get('longitude', 0)
+    )
     
     # Apply persona-specific weights
 
@@ -312,7 +320,8 @@ def calculate_persona_weighted_score(
         grid_score * weights["grid_infrastructure"] +
         digital_score * weights["digital_infrastructure"] +
         water_score * weights["water_resources"] +
-        lcoe_score * weights["lcoe_resource_quality"]
+        lcoe_score * weights["lcoe_resource_quality"] +
+        tnuos_score * weights.get("tnuos_transmission_costs", 0)
     )
     # Ensure score stays within 10-100 range
     final_internal_score = min(100.0, max(10.0, weighted_score))
@@ -383,6 +392,10 @@ def calculate_custom_weighted_score(
         project.get('longitude', 0), 
         project.get('technology_type', '')
     )
+    tnuos_score = calculate_tnuos_score(
+    project.get('latitude', 0), 
+    project.get('longitude', 0)
+    )
     
     # Apply custom weights
     weighted_score = (
@@ -392,7 +405,8 @@ def calculate_custom_weighted_score(
         grid_score * custom_weights.get("grid_infrastructure", 0) +
         digital_score * custom_weights.get("digital_infrastructure", 0) +
         water_score * custom_weights.get("water_resources", 0) +
-        lcoe_score * custom_weights.get("lcoe_resource_quality", 0)
+        lcoe_score * custom_weights.get("lcoe_resource_quality", 0) +
+        tnuos_score * custom_weights.get("tnuos_transmission_costs", 0)
     )
     
     # Ensure score stays within 10-100 range
@@ -1128,12 +1142,12 @@ async def get_enhanced_geojson(
                     'nearest_distances': {}
                 }
                  # Use custom weights scoring if provided, otherwise persona-based or renewable energy scoring
-                if parsed_custom_weights:
-                    rating_result = calculate_custom_weighted_score(project, proximity_scores, parsed_custom_weights)
-                elif persona:
-                    rating_result = calculate_persona_weighted_score(project, proximity_scores, persona)
-                else:
-                    rating_result = calculate_enhanced_investment_rating(project, proximity_scores)
+            if parsed_custom_weights:
+                rating_result = calculate_custom_weighted_score(project, proximity_scores, parsed_custom_weights)
+            elif persona:
+                rating_result = calculate_persona_weighted_score(project, proximity_scores, persona)
+            else:
+                rating_result = calculate_enhanced_investment_rating(project, proximity_scores)              
             
             features.append({
                 "type": "Feature",
@@ -1582,6 +1596,7 @@ async def get_customer_match_projects(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
