@@ -735,3 +735,198 @@ Market Coverage: 150+ UK renewable projects with comprehensive infrastructure an
 Bidirectional Efficiency: Enables mutual evaluation between power and data center developers
 
 The platform now provides the most sophisticated renewable energy / data center matching system available, combining mathematical rigor with practical business application for accelerated clean energy deployment.
+
+claude.md
+(Final — January 2025)
+
+Interactive platform for matching UK renewable projects with data‑center personas using an 8‑component scoring engine. This document consolidates project context, database design, algorithm flow, and code‑change instructions. It also enforces a strict workflow: always request the relevant file(s) before proposing or implementing any edits.
+
+📁 Repository Overview
+/
+├── README.md
+├── public/
+├── src/
+│   ├── components/
+│   │   ├── PersonaSelector.tsx
+│   │   ├── DynamicSiteMap.tsx
+│   │   ├── MapOverlayControls.tsx
+│   │   └── …
+│   ├── pages/
+│   │   ├── HyperscalerDashboard.tsx
+│   │   ├── UtilityDashboard.tsx
+│   │   └── …
+│   ├── hooks/, integrations/, lib/, store/
+│   └── main.tsx              # React entry point
+└── supabase/
+    ├── functions/
+    └── migrations/
+Backend: Python FastAPI service (file: main.py) lives outside this repository.
+Before editing backend logic, explicitly request main.py by path.
+
+🗄️ Supabase Database Schema
+Table	Key Fields / Notes
+renewable_projects	ref_id, site_name, technology_type, capacity_mw, …
+tnuos_zones	UK generation zones, zone_id, generation_tariff_pounds_per_kw
+substations	SUBST_NAME, COMPANY, VOLTAGE_HIGH, geometry
+transmission_lines	line_name, voltage_kv, path_coordinates (GeoJSON)
+fiber_cables	cable_name, operator, route_coordinates (GeoJSON)
+internet_exchange_points	ixp_name, operator, coordinates
+water_resources	resource_name, resource_type, coordinates (point/line)
+All spatial tables use PostGIS geometry and indexing for sub‑second proximity queries.
+
+⚙️ Algorithm Flow (main.py – backend)
+Inputs
+
+Persona (hyperscaler, colocation, edge_computing, or custom weights)
+
+Optional DC demand & weight overrides
+
+Capacity Gating
+
+Minimum MW thresholds (1 / 5 / 50) with ≥90 % adequacy check
+
+Component Scoring
+
+calculate_capacity_component_score(capacity_mw)
+
+calculate_development_stage_score(status)
+
+calculate_technology_score(technology_type)
+
+calculate_grid_infrastructure_score(proximity_scores)
+
+calculate_digital_infrastructure_score(proximity_scores)
+
+calculate_water_resources_score(proximity_scores)
+
+calculate_lcoe_score(lat, lng, technology_type)
+
+calculate_tnuos_score(lat, lng)
+
+Persona Weighting
+
+weighted_score = (
+    capacity * w["capacity"] +
+    development_stage * w["development_stage"] +
+    technology * w["technology"] +
+    grid_infrastructure * w["grid_infrastructure"] +
+    digital_infrastructure * w["digital_infrastructure"] +
+    water_resources * w["water_resources"] +
+    lcoe_resource_quality * w["lcoe_resource_quality"] +
+    tnuos_transmission_costs * w["tnuos_transmission_costs"]
+)
+Internal 10‑100 score → displayed as 1.0‑10.0 rating.
+Color & description derived from display rating.
+
+Output
+GeoJSON FeatureCollection with:
+
+investment_rating (1.0–10.0)
+
+component_scores and weighted_contributions
+
+nearest_infrastructure distances
+
+rating_distribution metadata
+
+🧠 Key Frontend Components
+File Path	Purpose
+src/components/PersonaSelector.tsx	Tabbed weight management for 8 components
+src/components/DynamicSiteMap.tsx	Mapbox GL map with infrastructure/TNUoS overlays
+src/components/MapOverlayControls.tsx	Layer toggles with icon mapping
+src/pages/HyperscalerDashboard.tsx	Data‑center developer workflow
+src/pages/UtilityDashboard.tsx	Power developer customer‑matching interface
+✅ Workflow Rules
+Request Files First
+
+When planning edits, explicitly request the current version of each file.
+
+Example: “Please provide main.py and src/pages/HyperscalerDashboard.tsx.”
+
+Plan with Precision
+
+Use exact file paths and approximate position (e.g., “~25 % into file”).
+
+Provide find/replace/after blocks so developers can locate code quickly.
+
+No Blind Changes
+
+Never assume context beyond provided snippets.
+
+If unsure, request additional lines or files.
+
+Testing & Commits
+
+After edits, run project checks (lint, type, unit tests) where feasible.
+
+Commit with a clear message, then open a PR.
+
+🔧 Pending Enhancements (Illustrative Guidance)
+The following tasks require the relevant file to be requested before implementation.
+
+1. Rebalance Development Stage Scoring
+Operational sites score too high versus development opportunities.
+File: main.py
+Location: ~25 % into file in calculate_development_stage_score
+Action: Replace existing if/elif block with improved scoring (higher for “granted”, lower for “operational”).
+Next Step: Request main.py to confirm lines before editing.
+
+2. Capacity Scoring Generosity
+Scores for 50–100 MW hyperscaler projects remain conservative.
+File: main.py
+Location: ~22 % into file in calculate_capacity_component_score
+Action: Expand thresholds to reward 50–100 MW with ≥80/100 scores.
+Next Step: Request main.py to verify surrounding logic.
+
+3. TNUoS Spatial Integration
+Baseline latitude estimation; needs zone lookup.
+File: main.py
+Location: within calculate_persona_weighted_score and calculate_tnuos_score
+Action: Replace coordinate‑based estimation with spatial query to tnuos_zones.
+Next Step: Request main.py and relevant database helpers before updating.
+
+4. Hyperscaler Dashboard UI
+Align with compact design from UtilityDashboard.
+File: src/pages/HyperscalerDashboard.tsx
+Location: ~85 % into file (project list rendering)
+Action: Replace existing list with compact cards + rating threshold filter.
+Next Step: Request the file to inspect current JSX structure.
+
+📣 When You Need a File…
+Use explicit requests:
+
+Backend: main.py
+
+Frontend components: e.g., src/components/PersonaSelector.tsx
+
+Page views: e.g., src/pages/UtilityDashboard.tsx
+
+Only after receiving the file should you reference line numbers or propose changes.
+
+🔍 Quick Reference — Persona Capacity Ranges
+Persona	Minimum MW	Max MW
+Edge Computing	1	1000
+Colocation	5	1000
+Hyperscaler	50	1000
+🛠️ Tooling & Commands
+Run these after code changes (where environment permits):
+
+# Backend
+pytest
+flake8
+
+# Frontend
+npm run lint
+npm test
+If a command fails due to missing dependencies or environment limits, note it in the PR.
+
+✉️ PR Checklist
+ Requested and reviewed relevant files
+
+ Implemented changes with precise find/replace blocks
+
+ Ran tests/linters (or documented limitations)
+
+ Commit message describes change clearly
+
+ PR body summarizes modifications & links to related issue/section
