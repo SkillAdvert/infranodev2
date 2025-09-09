@@ -1294,8 +1294,7 @@ async def get_substations():
                 "operator": station['COMPANY'],
                 "voltage_kv": station['VOLTAGE_HIGH'],
                 "capacity_mva": station.get('capacity_mva'),
-                "constraint": station.get('CONSTRAINT'),
-                "status": station.get('STATUS'),  # ← MISSING: You forgot status
+                "constraint_status": station.get('CONSTRAINT STATUS'),
                 "type": "substation"
             }
         })
@@ -1598,6 +1597,7 @@ async def get_customer_match_projects(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
