@@ -1279,21 +1279,20 @@ async def get_substations():
     stations = await query_supabase("substations?select=*")
     
     features = []
-    for station in stations or []:
-        if not station.get('longitude') or not station.get('latitude'):
-            continue
-            
+    if not station.get('Long') or not station.get('Lat'):
+    continue
         features.append({
             "type": "Feature",
             "geometry": {
                 "type": "Point",
-                "coordinates": [station['longitude'], station['latitude']]
+                "coordinates": [station['Long'], station['Lat']]
             },
             "properties": {
-                "name": station['substation_name'],
-                "operator": station['operator'],
-                "voltage_kv": station['primary_voltage_kv'],
-                "capacity_mva": station['capacity_mva'],
+                "name": station['SUBST_NAME'],
+                "operator": station['COMPANY'],
+                "voltage_kv": station['VOLTAGE_HIGH'],
+                "capacity_mva": station.get('capacity_mva'),  # This will be null
+                "constraint": station.get('CONSTRAINT'), 
                 "type": "substation"
             }
         })
@@ -1596,6 +1595,7 @@ async def get_customer_match_projects(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
