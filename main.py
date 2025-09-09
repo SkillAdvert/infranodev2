@@ -1279,8 +1279,10 @@ async def get_substations():
     stations = await query_supabase("substations?select=*")
     
     features = []
-    if not station.get('Long') or not station.get('Lat'):
-    continue
+    for station in stations or []:  # ← MISSING: You need a for loop
+        if not station.get('Long') or not station.get('Lat'):
+            continue  # ← WRONG INDENTATION: This was indented incorrectly
+            
         features.append({
             "type": "Feature",
             "geometry": {
@@ -1291,8 +1293,9 @@ async def get_substations():
                 "name": station['SUBST_NAME'],
                 "operator": station['COMPANY'],
                 "voltage_kv": station['VOLTAGE_HIGH'],
-                "capacity_mva": station.get('capacity_mva'),  # This will be null
-                "constraint": station.get('CONSTRAINT'), 
+                "capacity_mva": station.get('capacity_mva'),
+                "constraint": station.get('CONSTRAINT'),
+                "status": station.get('STATUS'),  # ← MISSING: You forgot status
                 "type": "substation"
             }
         })
@@ -1595,6 +1598,7 @@ async def get_customer_match_projects(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
