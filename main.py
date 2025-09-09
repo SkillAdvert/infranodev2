@@ -64,9 +64,9 @@ PERSONA_WEIGHTS = {
 
 # Capacity filtering ranges for persona-based technology filtering
 PERSONA_CAPACITY_RANGES = {
-    "edge_computing": {"min": 0, "max": 5},      # <5MW
-    "colocation": {"min": 5, "max": 30},         # 5-30MW  
-    "hyperscaler": {"min": 50, "max": 1000}     # 50MW+
+    "edge_computing": {"min": 1, "max": 1000},    # ≥1MW (no upper limit)
+    "colocation": {"min": 5, "max": 1000},        # ≥5MW (no upper limit)  
+    "hyperscaler": {"min": 50, "max": 1000}       # ≥50MW (no upper limit)
 }
 
 # LCOE configuration - easy to edit in future
@@ -1664,6 +1664,7 @@ async def get_customer_match_projects(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
