@@ -29,36 +29,36 @@ PersonaType = Literal["hyperscaler", "colocation", "edge_computing"]
 # Updated persona weights with LCOE
 PERSONA_WEIGHTS = {
     "hyperscaler": {
-        "capacity": 0.25,                    # Reduced from 0.30
-        "development_stage": 0.20,           # Unchanged
-        "technology": 0.08,                  # Unchanged  
-        "grid_infrastructure": 0.17,         # Unchanged
-        "digital_infrastructure": 0.05,      # Unchanged
-        "water_resources": 0.05,             # Unchanged
-        "tnuos_transmission_costs": 0.12,    # Reduced from 0.15
-        "lcoe_resource_quality": 0.08        # NEW - 8% weight
+        "capacity": 0.25,
+        "development_stage": 0.20,
+        "technology": 0.08,
+        "grid_infrastructure": 0.12,           # Reduced from 0.17
+        "digital_infrastructure": 0.05,
+        "water_resources": 0.05,
+        "tnuos_transmission_costs": 0.12,
+        "lcoe_resource_quality": 0.13          # Increased from 0.08 to rebalance
     },
     
     "colocation": {
-        "capacity": 0.13,                    # Reduced from 0.15
-        "development_stage": 0.18,           # Reduced from 0.20
-        "technology": 0.08,                  # Unchanged
-        "grid_infrastructure": 0.22,         # Unchanged
-        "digital_infrastructure": 0.22,      # Unchanged
-        "water_resources": 0.05,             # Unchanged
-        "tnuos_transmission_costs": 0.10,    # Reduced from 0.12
-        "lcoe_resource_quality": 0.02        # NEW - 2% weight (less important)
+        "capacity": 0.13,
+        "development_stage": 0.18,
+        "technology": 0.08,
+        "grid_infrastructure": 0.17,           # Reduced from 0.22
+        "digital_infrastructure": 0.22,
+        "water_resources": 0.05,
+        "tnuos_transmission_costs": 0.10,
+        "lcoe_resource_quality": 0.07          # Increased from 0.02 to rebalance
     },
     
     "edge_computing": {
-        "capacity": 0.09,                    # Unchanged
-        "development_stage": 0.26,           # Reduced from 0.28
-        "technology": 0.14,                  # Unchanged
-        "grid_infrastructure": 0.14,         # Unchanged
-        "digital_infrastructure": 0.23,      # Unchanged
-        "water_resources": 0.05,             # Unchanged
-        "tnuos_transmission_costs": 0.06,    # Reduced from 0.07
-        "lcoe_resource_quality": 0.03        # NEW - 3% weight
+        "capacity": 0.09,
+        "development_stage": 0.26,
+        "technology": 0.14,
+        "grid_infrastructure": 0.10,           # Reduced from 0.14
+        "digital_infrastructure": 0.23,
+        "water_resources": 0.05,
+        "tnuos_transmission_costs": 0.06,
+        "lcoe_resource_quality": 0.07          # Increased from 0.03 to rebalance
     }
 }
 
@@ -71,12 +71,14 @@ PERSONA_CAPACITY_RANGES = {
 
 # LCOE configuration - easy to edit in future
 LCOE_CONFIG = {
-    "baseline_score": 75.0,  # 75/100 for £50/MWh baseline
-    "default_lcoe_pounds_per_mwh": 50.0,
+    "baseline_pounds_per_mwh": 55.0,  # £55/MWh baseline
+    "gamma_slope": 0.04,  # Exponential decay rate
+    "min_lcoe": 40.0,     # £40/MWh minimum expected
+    "max_lcoe": 75.0,     # £75/MWh maximum expected
     # Future: zone-specific LCOE rates
     "zone_specific_rates": {
-        # "GZ1": 45.0,  # Scotland - lower costs
-        # "GZ27": 55.0, # South England - higher costs
+        # "GZ1": 45.0,  # Scotland - lower costs  
+        # "GZ27": 65.0, # South England - higher costs
         # Can be configured later
     }
 }
@@ -110,14 +112,14 @@ def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
     return 2 * R * asin(sqrt(a))
 
-def exponential_score(distance_km: float, d_max: float = 100, s_max: float = 50) -> float:
-    """Exponential decay scoring: closer infrastructure = exponentially better score"""
-    if distance_km >= d_max:
+def exponential_score(distance_km: float, half_distance_km: float) -> float:
+    """Half-distance calibrated scoring: score=50 at half_distance_km"""
+    if distance_km >= 200:  # Hard cutoff at 200km
         return 0
     
-    k = 4.6 / d_max  # ln(100) ≈ 4.6, gives good decay curve
-    score = s_max * (2.718 ** (-k * distance_km))
-    return max(0, score)
+    k = 0.693147 / half_distance_km  # ln(2) / d_half for score=50 at half_distance
+    score = 100 * (2.718 ** (-k * distance_km))
+    return max(0, min(100, score))
 
 def point_to_line_segment_distance(px: float, py: float, x1: float, y1: float, x2: float, y2: float) -> float:
     """Calculate shortest distance from point to line segment using haversine"""
@@ -260,24 +262,62 @@ def calculate_water_resources_score(proximity_scores: Dict) -> float:
     else: return base_score                   # Air cooling sufficient
 
 def calculate_lcoe_score(project_lat: float, project_lng: float, technology_type: str) -> float:
-    """Score LCOE resource quality on 10-100 scale"""
-    # For now: flat baseline score across all zones and technologies
-    # Future: zone-specific and technology-specific LCOE calculations
-    base_score = LCOE_CONFIG["baseline_score"]  # 75.0 for £50/MWh
+    """Score LCOE resource quality on 10-100 scale using exponential decay"""
     
-    # Future enhancement: vary by TNUoS zone
-    # zone_rates = LCOE_CONFIG["zone_specific_rates"]
-    # if zone_id in zone_rates:
-    #     zone_lcoe = zone_rates[zone_id]
-    #     # Convert LCOE to score (lower LCOE = higher score)
-    #     base_score = 100 - (zone_lcoe - 40) * 2  # Example calculation   
-    return min(100.0, max(10.0, base_score))
+    # For now: use technology-based LCOE estimates
+    # Future: zone-specific and resource-specific LCOE calculations
+    
+    # Technology-based LCOE estimates (£/MWh)
+    tech_lcoe = {
+        'solar': 52.0,
+        'wind': 48.0, 
+        'battery': 60.0,
+        'hybrid': 50.0,
+        'offshore wind': 45.0,
+        'onshore wind': 48.0
+    }
+    
+    # Get LCOE for this technology (default to baseline if unknown)
+    tech_key = str(technology_type).lower()
+    lcoe = tech_lcoe.get(tech_key, LCOE_CONFIG["baseline_pounds_per_mwh"])
+    
+    # Exponential decay scoring: S_L = 100 * exp(-γ * max(0, ℓ - ℓ₀))
+    baseline = LCOE_CONFIG["baseline_pounds_per_mwh"]  # £55/MWh
+    gamma = LCOE_CONFIG["gamma_slope"]  # 0.04
+    
+    if lcoe <= baseline:
+        # At or below baseline gets full score
+        score = 100.0
+    else:
+        # Exponential penalty for higher LCOE
+        penalty = lcoe - baseline
+        score = 100.0 * (2.718 ** (-gamma * penalty))
+    
+    return min(100.0, max(10.0, score))
     
 def calculate_tnuos_score(project_lat: float, project_lng: float) -> float:
     """Score TNUoS transmission costs on 10-100 scale based on location"""
-    # Simple baseline score for now - represents average UK TNUoS costs
-    # Future: replace with actual spatial query to TNUoS zones table
-    return 65.0  # Moderate score representing typical transmission costs    
+    
+    # TNUoS rates generally decrease from North (Scotland) to South (England)
+    # Rough geographic estimation based on latitude
+    lat_normalized = (project_lat - 49.5) / (60.0 - 49.5)  # 0=South, 1=North
+    estimated_tariff = -2.0 + (17.0 * lat_normalized)  # Range: -2 to +15 £/kW
+    
+    # Convert to percentile score using known UK TNUoS range
+    # UK TNUoS range: approximately -3 to +16 £/kW
+    min_tariff = -3.0
+    max_tariff = 16.0
+    
+    # Percentile calculation (lower tariffs = higher scores)
+    if estimated_tariff <= min_tariff:
+        percentile_score = 100.0
+    elif estimated_tariff >= max_tariff:
+        percentile_score = 0.0
+    else:
+        normalized_position = (estimated_tariff - min_tariff) / (max_tariff - min_tariff)
+        percentile_score = 100.0 * (1.0 - normalized_position)
+    
+    return min(100.0, max(0.0, percentile_score))
 
 # ==================== PERSONA-BASED SCORING ====================
 
@@ -685,7 +725,7 @@ async def calculate_proximity_scores_batch(projects: List[Dict]) -> List[Dict]:
         
         if substation_distances:
             nearest_substation = min(substation_distances)
-            proximity_scores['substation_score'] = exponential_score(nearest_substation)
+            proximity_scores['substation_score'] = exponential_score(nearest_substation, 30.0)  # 30km half-distance
             proximity_scores['nearest_distances']['substation_km'] = round(nearest_substation, 1)
         
         # 2. TRANSMISSION LINES
@@ -713,7 +753,7 @@ async def calculate_proximity_scores_batch(projects: List[Dict]) -> List[Dict]:
         
         if transmission_distances:
             nearest_transmission = min(transmission_distances)
-            proximity_scores['transmission_score'] = exponential_score(nearest_transmission)
+            proximity_scores['transmission_score'] = exponential_score(nearest_transmission, 30.0)  # 30km half-distance
             proximity_scores['nearest_distances']['transmission_km'] = round(nearest_transmission, 1)
         
         # 3. FIBER CABLES
@@ -741,7 +781,7 @@ async def calculate_proximity_scores_batch(projects: List[Dict]) -> List[Dict]:
         
         if fiber_distances:
             nearest_fiber = min(fiber_distances)
-            proximity_scores['fiber_score'] = exponential_score(nearest_fiber, s_max=20)
+            proximity_scores['fiber_score'] = exponential_score(nearest_fiber, 15.0)  # 10km half-distance  
             proximity_scores['nearest_distances']['fiber_km'] = round(nearest_fiber, 1)
         
         # 4. INTERNET EXCHANGE POINTS
@@ -756,7 +796,7 @@ async def calculate_proximity_scores_batch(projects: List[Dict]) -> List[Dict]:
         
         if ixp_distances:
             nearest_ixp = min(ixp_distances)
-            proximity_scores['ixp_score'] = exponential_score(nearest_ixp, s_max=10)
+            proximity_scores['ixp_score'] = exponential_score(nearest_ixp, 40.0)
             proximity_scores['nearest_distances']['ixp_km'] = round(nearest_ixp, 1)
         
         # 5. WATER RESOURCES
@@ -790,7 +830,7 @@ async def calculate_proximity_scores_batch(projects: List[Dict]) -> List[Dict]:
         
         if water_distances:
             nearest_water = min(water_distances)
-            proximity_scores['water_score'] = exponential_score(nearest_water, s_max=15)
+            proximity_scores['water_score'] = exponential_score(nearest_water, 25.0)  # 25km half-distance
             proximity_scores['nearest_distances']['water_km'] = round(nearest_water, 1)
         
         # Calculate total proximity bonus
@@ -1061,7 +1101,8 @@ async def get_enhanced_geojson(
     limit: int = Query(150, description="Number of projects to process"),
     persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring"),
     apply_capacity_filter: bool = Query(True, description="Filter projects by persona capacity requirements"),
-    custom_weights: Optional[str] = Query(None, description="JSON string of custom weights (overrides persona)")
+    custom_weights: Optional[str] = Query(None, description="JSON string of custom weights (overrides persona)"),
+    dc_demand_mw: Optional[float] = Query(None, description="DC facility demand in MW for capacity gating")
 ):
     """ENHANCED BATCH VERSION: Get projects with persona-based or renewable energy scoring"""
     start_time = time.time()
@@ -1087,10 +1128,36 @@ async def get_enhanced_geojson(
         projects = await query_supabase(f"renewable_projects?select=*&limit={limit}")
         print(f"✅ Loaded {len(projects)} projects from database")
         # Apply capacity filtering if persona is specified and filtering is enabled
+       # Apply capacity filtering if persona is specified and filtering is enabled
         if persona and apply_capacity_filter:
             original_count = len(projects)
             projects = filter_projects_by_persona_capacity(projects, persona)
             print(f"🎯 Filtered to {len(projects)} projects for {persona} (was {original_count})")
+        
+        # Add capacity gating for DC queries (ensure adequate supply)
+        dc_demand = None
+        if persona:
+            # Extract DC demand from query parameters if provided
+            # For now, use persona-based typical demands as gating thresholds
+            dc_demand_thresholds = {
+                "hyperscaler": 50.0,    # 50MW minimum for hyperscaler
+                "colocation": 5.0,      # 5MW minimum for colocation  
+                "edge_computing": 1.0   # 1MW minimum for edge
+            }
+            
+            min_capacity = dc_demand_thresholds.get(persona, 1.0)
+            capacity_gated_projects = []
+            
+            for project in projects:
+                project_capacity = project.get('capacity_mw', 0) or 0
+                # Apply 90% adequacy threshold (θ = 0.9)
+                if project_capacity >= min_capacity * 0.9:
+                    capacity_gated_projects.append(project)
+            
+            gated_count = len(capacity_gated_projects)
+            if gated_count != len(projects):
+                print(f"⚡ Capacity gating: {gated_count}/{len(projects)} projects meet minimum capacity for {persona}")
+                projects = capacity_gated_projects
         
     except Exception as e:
         print(f"❌ Database error: {e}")
@@ -1597,6 +1664,7 @@ async def get_customer_match_projects(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
