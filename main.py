@@ -182,16 +182,77 @@ def get_rating_description(score_out_of_100: float) -> str:
 
 # ==================== COMPONENT SCORING FUNCTIONS ====================
 
-def calculate_capacity_component_score(capacity_mw: float) -> float:
-    """Score capacity on 10-100 scale based on data center requirements"""
-    if capacity_mw >= 250: return 125.0      # Hyperscale requirements
-    elif capacity_mw >= 100: return 100
-    elif capacity_mw >= 50: return 85.0      # Large enterprise
-    elif capacity_mw >= 25: return 70.0      # Medium enterprise  
-    elif capacity_mw >= 10: return 55.0      # Small enterprise
-    elif capacity_mw >= 5: return 40.0       # Edge computing
-    elif capacity_mw >= 1: return 25.0       # Micro edge
-    else: return 10.0                        # Too small
+def calculate_capacity_component_score(capacity_mw: float, persona: str = None) -> float:
+    """Score capacity on 10-100 scale based on persona-specific optimal ranges"""
+    
+    if not persona or persona == "custom":
+        # Default behavior for backward compatibility and custom personas
+        if capacity_mw >= 250: return 125.0      # Hyperscale requirements
+        elif capacity_mw >= 100: return 100
+        elif capacity_mw >= 50: return 85.0      # Large enterprise
+        elif capacity_mw >= 25: return 70.0      # Medium enterprise  
+        elif capacity_mw >= 10: return 55.0      # Small enterprise
+        elif capacity_mw >= 5: return 40.0       # Edge computing
+        elif capacity_mw >= 1: return 25.0       # Micro edge
+        else: return 10.0                        # Too small
+    
+    # Persona-specific optimal range scoring
+    if persona == "hyperscaler":
+        # Optimal range: 50-200MW
+        if 50 <= capacity_mw <= 200:
+            return 100.0  # Perfect fit
+        elif 25 <= capacity_mw < 50:
+            # Too small but usable: linear scale from 60-85
+            return 60.0 + (capacity_mw - 25) * (25.0 / 25)  # 60-85 points
+        elif 200 < capacity_mw <= 400:
+            # Bigger than needed but manageable: scale from 85-70
+            excess = (capacity_mw - 200) / 200
+            return max(70.0, 85.0 - (excess * 15))
+        elif capacity_mw > 400:
+            # Too complex/large
+            return max(40.0, 70.0 - ((capacity_mw - 400) / 100) * 10)
+        else:  # < 25MW
+            # Too small for hyperscale
+            return max(20.0, capacity_mw * 2)
+    
+    elif persona == "colocation":
+        # Optimal range: 10-50MW
+        if 10 <= capacity_mw <= 50:
+            return 100.0  # Perfect fit
+        elif 5 <= capacity_mw < 10:
+            # Small but workable: scale from 70-85
+            return 70.0 + (capacity_mw - 5) * (15.0 / 5)
+        elif 50 < capacity_mw <= 100:
+            # Bigger than needed: scale from 85-60
+            excess = (capacity_mw - 50) / 50
+            return max(60.0, 85.0 - (excess * 25))
+        elif capacity_mw > 100:
+            # Overkill territory
+            return max(30.0, 60.0 - ((capacity_mw - 100) / 50) * 15)
+        else:  # < 5MW
+            # Too small for colocation
+            return max(30.0, capacity_mw * 6)
+    
+    elif persona == "edge_computing":
+        # Optimal range: 1-10MW
+        if 1 <= capacity_mw <= 10:
+            return 100.0  # Perfect fit
+        elif 0.5 <= capacity_mw < 1:
+            # Small but possible: scale from 60-85
+            return 60.0 + (capacity_mw - 0.5) * (25.0 / 0.5)
+        elif 10 < capacity_mw <= 25:
+            # Bigger than needed: scale from 85-40
+            excess = (capacity_mw - 10) / 15
+            return max(40.0, 85.0 - (excess * 45))
+        elif capacity_mw > 25:
+            # Massive overkill
+            return max(20.0, 40.0 - ((capacity_mw - 25) / 25) * 15)
+        else:  # < 0.5MW
+            # Too small even for edge
+            return max(10.0, capacity_mw * 20)
+    
+    # Fallback
+    return 50.0                    # Too small
 
 def calculate_development_stage_score(status: str) -> float:
     """Score development stage on 10-100 scale"""
@@ -335,7 +396,7 @@ def calculate_persona_weighted_score(
     weights = PERSONA_WEIGHTS[persona]
     
     # Calculate component scores (10-100 scale)
-    capacity_score = calculate_capacity_component_score(project.get('capacity_mw', 0))
+    capacity_score = calculate_capacity_component_score(project.get('capacity_mw', 0), persona)
     stage_score = calculate_development_stage_score(project.get('development_status_short', ''))
     tech_score = calculate_technology_score(project.get('technology_type', ''))
     grid_score = calculate_grid_infrastructure_score(proximity_scores)
@@ -1664,6 +1725,7 @@ async def get_customer_match_projects(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
