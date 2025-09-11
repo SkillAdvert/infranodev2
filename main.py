@@ -1098,7 +1098,7 @@ async def score_user_sites(
 
 @app.get("/api/projects/enhanced")
 async def get_enhanced_geojson(
-    limit: int = Query(400, description="Number of projects to process"),
+    limit: int = Query(1100, description="Number of projects to process"),
     persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring"),
     apply_capacity_filter: bool = Query(True, description="Filter projects by persona capacity requirements"),
     custom_weights: Optional[str] = Query(None, description="JSON string of custom weights (overrides persona)"),
@@ -1599,7 +1599,7 @@ async def compare_scoring_systems(
 @app.get("/api/projects/customer-match")
 async def get_customer_match_projects(
     target_customer: PersonaType = Query("hyperscaler", description="Target customer persona"),
-    limit: int = Query(100, description="Number of projects to analyze")
+    limit: int = Query(1100, description="Number of projects to analyze")
 ):
     """Get projects with customer suitability analysis for Power Developers"""
     
@@ -1664,6 +1664,7 @@ async def get_customer_match_projects(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
