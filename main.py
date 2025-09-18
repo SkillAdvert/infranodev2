@@ -254,15 +254,26 @@ def calculate_capacity_component_score(capacity_mw: float, persona: str = None) 
     # Fallback
     return 50.0                    # Too small
 
-def calculate_development_stage_score(status: str) -> float:
-    """Score development stage on 10-100 scale"""
+def calculate_development_stage_score(status: str, perspective: str = "demand") -> float:
+    """Score development stage on 10-100 scale based on perspective"""
     status = str(status).lower()
-    if 'operational' in status: return 50.0         # Possible grid headroom
-    elif 'construction' in status: return 70       # Near-term deployment
-    elif 'granted' in status: return 85          # Planning approved
-    elif 'submitted' in status: return 45.0         # Planning pending
-    elif 'planning' in status: return 30          # Early stage
-    else: return 10.0                               # Unknown/conceptual
+    
+    if perspective == "supply":
+        # Power Developer view: readiness to receive demand
+        if 'fid_ready' in status or 'ready' in status: return 95.0
+        elif 'consented' in status or 'granted' in status: return 85.0
+        elif 'submitted' in status: return 65.0
+        elif 'planning' in status or 'pre-planning' in status: return 45.0
+        elif 'operational' in status: return 30.0  # Already built, limited flexibility
+        else: return 20.0
+    else:
+        # Data Center Developer view (existing logic)
+        if 'operational' in status: return 50.0         # Possible grid headroom
+        elif 'construction' in status: return 70       # Near-term deployment
+        elif 'granted' in status: return 85          # Planning approved
+        elif 'submitted' in status: return 45.0         # Planning pending
+        elif 'planning' in status: return 30          # Early stage
+        else: return 10.0                              # Unknown/conceptual
 
 def calculate_technology_score(tech_type: str) -> float:
     """Score technology type on 10-100 scale for data center suitability"""
@@ -379,69 +390,59 @@ def calculate_tnuos_score(project_lat: float, project_lng: float) -> float:
         percentile_score = 100.0 * (1.0 - normalized_position)
     
     return min(100.0, max(0.0, percentile_score))
-
-# ==================== PERSONA-BASED SCORING ====================
-
+    
 def calculate_persona_weighted_score(
-    project: Dict, 
-    proximity_scores: Dict, 
-    persona: PersonaType = "hyperscaler"
+    project: Dict,
+    proximity_scores: Dict,
+    persona: PersonaType = "hyperscaler",
+    perspective: str = "demand"
 ) -> Dict:
-    """
-    Calculate investment rating based on persona-specific weightings
-    
-    Returns scores on 10-100 internal scale, displayed as 1.0-10.0
-    """
-    
     weights = PERSONA_WEIGHTS[persona]
-    
-    # Calculate component scores (10-100 scale)
-    capacity_score = calculate_capacity_component_score(project.get('capacity_mw', 0), persona)
-    stage_score = calculate_development_stage_score(project.get('development_status_short', ''))
-    tech_score = calculate_technology_score(project.get('technology_type', ''))
+
+    if perspective == "supply":
+        adjusted_weights = weights.copy()
+        adjusted_weights["development_stage"] = weights["development_stage"] * 1.2
+        adjusted_weights["digital_infrastructure"] = weights["digital_infrastructure"] * 0.5
+        adjusted_weights["lcoe_resource_quality"] = weights["lcoe_resource_quality"] * 0.8
+        total = sum(adjusted_weights.values())
+        weights = {k: v / total for k, v in adjusted_weights.items()}
+
+    capacity_score = calculate_capacity_component_score(project.get("capacity_mw", 0) or 0, persona)
+    stage_score = calculate_development_stage_score(project.get("development_status_short", ""), perspective)
+    tech_score = calculate_technology_score(project.get("technology_type", ""))
     grid_score = calculate_grid_infrastructure_score(proximity_scores)
     digital_score = calculate_digital_infrastructure_score(proximity_scores)
     water_score = calculate_water_resources_score(proximity_scores)
     lcoe_score = calculate_lcoe_score(
-        project.get('latitude', 0), 
-        project.get('longitude', 0), 
-        project.get('technology_type', '')
+        project.get("latitude", 0),
+        project.get("longitude", 0),
+        project.get("technology_type", "")
     )
     tnuos_score = calculate_tnuos_score(
-    project.get('latitude', 0), 
-    project.get('longitude', 0)
+        project.get("latitude", 0),
+        project.get("longitude", 0)
     )
-    
-    # Apply persona-specific weights
 
     weighted_score = (
-        capacity_score * weights["capacity"] +
-        stage_score * weights["development_stage"] +
-        tech_score * weights["technology"] +
-        grid_score * weights["grid_infrastructure"] +
-        digital_score * weights["digital_infrastructure"] +
-        water_score * weights["water_resources"] +
-        lcoe_score * weights["lcoe_resource_quality"] +
-        tnuos_score * weights.get("tnuos_transmission_costs", 0)
+        capacity_score * weights["capacity"]
+        + stage_score * weights["development_stage"]
+        + tech_score * weights["technology"]
+        + grid_score * weights["grid_infrastructure"]
+        + digital_score * weights["digital_infrastructure"]
+        + water_score * weights["water_resources"]
+        + lcoe_score * weights["lcoe_resource_quality"]
+        + tnuos_score * weights.get("tnuos_transmission_costs", 0.0)
     )
-    # Ensure score stays within 10-100 range
+
     final_internal_score = min(100.0, max(10.0, weighted_score))
-    
-    # Convert to display scale (1.0-10.0)
     display_rating = final_internal_score / 10.0
-    
-    # Get color and description
     color = get_color_from_score(final_internal_score)
     description = get_rating_description(final_internal_score)
-    
+
     return {
-        # Display scores
         "investment_rating": round(display_rating, 1),
         "rating_description": description,
         "color_code": color,
-        
-        # Component breakdown for transparency
-
         "component_scores": {
             "capacity": round(capacity_score, 1),
             "development_stage": round(stage_score, 1),
@@ -449,10 +450,9 @@ def calculate_persona_weighted_score(
             "grid_infrastructure": round(grid_score, 1),
             "digital_infrastructure": round(digital_score, 1),
             "water_resources": round(water_score, 1),
-            "lcoe_resource_quality": round(lcoe_score, 1)
+            "lcoe_resource_quality": round(lcoe_score, 1),
+            "tnuos_transmission_costs": round(tnuos_score, 1),
         },
-        
-        # Weighted contributions (now includes LCOE)
         "weighted_contributions": {
             "capacity": round(capacity_score * weights["capacity"], 1),
             "development_stage": round(stage_score * weights["development_stage"], 1),
@@ -460,15 +460,13 @@ def calculate_persona_weighted_score(
             "grid_infrastructure": round(grid_score * weights["grid_infrastructure"], 1),
             "digital_infrastructure": round(digital_score * weights["digital_infrastructure"], 1),
             "water_resources": round(water_score * weights["water_resources"], 1),
-            "lcoe_resource_quality": round(lcoe_score * weights["lcoe_resource_quality"], 1)
+            "lcoe_resource_quality": round(lcoe_score * weights["lcoe_resource_quality"], 1),
+            "tnuos_transmission_costs": round(tnuos_score * weights.get("tnuos_transmission_costs", 0.0), 1),
         },
-       
-        
-        # Persona information
         "persona": persona,
         "persona_weights": weights,
         "internal_total_score": round(final_internal_score, 1),
-        "nearest_infrastructure": proximity_scores.get('nearest_distances', {})
+        "nearest_infrastructure": proximity_scores.get("nearest_distances", {}),
     }
 def calculate_custom_weighted_score(
     project: Dict, 
@@ -482,32 +480,31 @@ def calculate_custom_weighted_score(
     """
     
     # Calculate component scores (10-100 scale) - same as persona scoring
-    capacity_score = calculate_capacity_component_score(project.get('capacity_mw', 0))
-    stage_score = calculate_development_stage_score(project.get('development_status_short', ''))
-    tech_score = calculate_technology_score(project.get('technology_type', ''))
+    capacity_score = calculate_capacity_component_score(project.get("capacity_mw", 0) or 0)
+    stage_score = calculate_development_stage_score(project.get("development_status_short", ""))
+    tech_score = calculate_technology_score(project.get("technology_type", ""))
     grid_score = calculate_grid_infrastructure_score(proximity_scores)
     digital_score = calculate_digital_infrastructure_score(proximity_scores)
     water_score = calculate_water_resources_score(proximity_scores)
     lcoe_score = calculate_lcoe_score(
-        project.get('latitude', 0), 
-        project.get('longitude', 0), 
-        project.get('technology_type', '')
+        project.get("latitude", 0),
+        project.get("longitude", 0),
+        project.get("technology_type", "")
     )
     tnuos_score = calculate_tnuos_score(
-    project.get('latitude', 0), 
-    project.get('longitude', 0)
+        project.get("latitude", 0),
+        project.get("longitude", 0)
     )
-    
-    # Apply custom weights
+
     weighted_score = (
-        capacity_score * custom_weights.get("capacity", 0) +
-        stage_score * custom_weights.get("development_stage", 0) +
-        tech_score * custom_weights.get("technology", 0) +
-        grid_score * custom_weights.get("grid_infrastructure", 0) +
-        digital_score * custom_weights.get("digital_infrastructure", 0) +
-        water_score * custom_weights.get("water_resources", 0) +
-        lcoe_score * custom_weights.get("lcoe_resource_quality", 0) +
-        tnuos_score * custom_weights.get("tnuos_transmission_costs", 0)
+        capacity_score * custom_weights.get("capacity", 0.0)
+        + stage_score * custom_weights.get("development_stage", 0.0)
+        + tech_score * custom_weights.get("technology", 0.0)
+        + grid_score * custom_weights.get("grid_infrastructure", 0.0)
+        + digital_score * custom_weights.get("digital_infrastructure", 0.0)
+        + water_score * custom_weights.get("water_resources", 0.0)
+        + lcoe_score * custom_weights.get("lcoe_resource_quality", 0.0)
+        + tnuos_score * custom_weights.get("tnuos_transmission_costs", 0.0)
     )
     
     # Ensure score stays within 10-100 range
@@ -1163,7 +1160,8 @@ async def get_enhanced_geojson(
     persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring"),
     apply_capacity_filter: bool = Query(True, description="Filter projects by persona capacity requirements"),
     custom_weights: Optional[str] = Query(None, description="JSON string of custom weights (overrides persona)"),
-    dc_demand_mw: Optional[float] = Query(None, description="DC facility demand in MW for capacity gating")
+    dc_demand_mw: Optional[float] = Query(None, description="DC facility demand in MW for capacity gating"),
+    source_table: str = Query("renewable_projects", description="Source table - will be demand_sites for power devs in future")
 ):
     """ENHANCED BATCH VERSION: Get projects with persona-based or renewable energy scoring"""
     start_time = time.time()
@@ -1186,8 +1184,14 @@ async def get_enhanced_geojson(
     print(f"🚀 ENHANCED ENDPOINT WITH {scoring_mode.upper()} SCORING - Processing {limit} projects...")
     
     try:
-        projects = await query_supabase(f"renewable_projects?select=*&limit={limit}")
-        print(f"✅ Loaded {len(projects)} projects from database")
+        # Use source_table parameter - will be 'demand_sites' for power devs in future
+        # For now, both use renewable_projects
+        projects = await query_supabase(f"{source_table}?select=*&limit={limit}")
+        print(f"✅ Loaded {len(projects)} projects from {source_table}")
+        
+        # TODO: When demand_sites table is created, power developers will pass source_table='demand_sites'
+        if source_table != "renewable_projects":
+            print(f"⚠️ Note: {source_table} table requested but using renewable_projects as placeholder")
         # Apply capacity filtering if persona is specified and filtering is enabled
        # Apply capacity filtering if persona is specified and filtering is enabled
         if persona and apply_capacity_filter:
@@ -1657,6 +1661,80 @@ async def compare_scoring_systems(
             ]
         }
     }
+@app.post("/api/projects/power-developer-analysis")
+async def analyze_for_power_developer(
+    criteria: Dict,
+    site_location: Optional[Dict] = None,  # {"lat": x, "lng": y} for auto-calculate
+    target_persona: PersonaType = "hyperscaler",
+    limit: int = Query(150)
+):
+    """
+    Power Developer endpoint with auto-calculate feature.
+    Currently uses renewable_projects as placeholder for demand_sites.
+    """
+    
+    # TODO: Change to 'demand_sites' when table is created
+    source_table = "renewable_projects"  # Placeholder
+    
+    print(f"🔄 Power Developer Analysis - Using {source_table} as placeholder for demand sites")
+    
+    # Fetch projects (will be demand sites in future)
+    projects = await query_supabase(f"{source_table}?select=*&limit={limit}")
+    
+    # Handle auto-calculate for infrastructure fields
+    auto_calculated_values = {}
+    if site_location and criteria:
+        # Check which fields need auto-calculation (marked with -1)
+        if criteria.get('grid_infrastructure') == -1:
+            print("🤖 Auto-calculating grid infrastructure")
+            proximity = await calculate_proximity_scores_batch([{
+                'latitude': site_location['lat'],
+                'longitude': site_location['lng']
+            }])
+            if proximity:
+                score = calculate_grid_infrastructure_score(proximity[0])
+                auto_calculated_values['grid_infrastructure'] = {
+                    'score': score,
+                    'details': proximity[0].get('nearest_distances', {})
+                }
+                # Replace -1 with calculated score for use in scoring
+                criteria['grid_infrastructure'] = score
+        
+        if criteria.get('digital_infrastructure') == -1:
+            print("🤖 Auto-calculating digital infrastructure")
+            proximity = await calculate_proximity_scores_batch([{
+                'latitude': site_location['lat'],
+                'longitude': site_location['lng']
+            }])
+            if proximity:
+                score = calculate_digital_infrastructure_score(proximity[0])
+                auto_calculated_values['digital_infrastructure'] = {
+                    'score': score,
+                    'details': proximity[0].get('nearest_distances', {})
+                }
+                criteria['digital_infrastructure'] = score
+        
+        if criteria.get('water_resources') == -1:
+            print("🤖 Auto-calculating water resources")
+            proximity = await calculate_proximity_scores_batch([{
+                'latitude': site_location['lat'],
+                'longitude': site_location['lng']
+            }])
+            if proximity:
+                score = calculate_water_resources_score(proximity[0])
+                auto_calculated_values['water_resources'] = {
+                    'score': score,
+                    'details': proximity[0].get('nearest_distances', {})
+                }
+                criteria['water_resources'] = score
+    
+    # Return results
+    return {
+        "projects": projects,
+        "criteria": criteria,
+        "auto_calculated_values": auto_calculated_values,
+        "target_persona": target_persona
+    }      
 @app.get("/api/projects/customer-match")
 async def get_customer_match_projects(
     target_customer: PersonaType = Query("hyperscaler", description="Target customer persona"),
@@ -1720,29 +1798,6 @@ async def get_customer_match_projects(
             "projects_after_capacity_filtering": len(filtered_projects)
         }
     }
-
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
