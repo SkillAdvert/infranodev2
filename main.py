@@ -1798,6 +1798,52 @@ async def get_customer_match_projects(
             "projects_after_capacity_filtering": len(filtered_projects)
         }
     }
+    @app.post("/api/financial-model")
+async def calculate_financial_model_endpoint(request: dict):
+    """Simple endpoint that calls your existing renewable_model.py"""
+    try:
+        from renewable_model import (
+            RenewableFinancialModel, TechnologyParams, MarketPrices, 
+            FinancialAssumptions, TechnologyType, ProjectType, MarketRegion
+        )
+        
+        # Create the model using your existing classes
+        tech_params = TechnologyParams(
+            capacity_mw=request['capacity_mw'],
+            capex_per_mw=request['capex_per_kw'] * 1000,
+            opex_per_mw_year=request['opex_fix_per_mw_year'],
+            degradation_rate_annual=request['degradation'],
+            lifetime_years=request['project_life']
+        )
+        
+        market_prices = MarketPrices(
+            base_power_price=request['ppa_price'],
+            ppa_price=request['ppa_price']
+        )
+        
+        financial = FinancialAssumptions(
+            discount_rate=request['discount_rate'],
+            inflation_rate=request['inflation_rate']
+        )
+        
+        # Run your existing model
+        model = RenewableFinancialModel(
+            project_name="API Request",
+            technology_type=TechnologyType.SOLAR_PV,
+            project_type=ProjectType.UTILITY_SCALE,
+            market_region=MarketRegion.UK,
+            technology_params=tech_params,
+            market_prices=market_prices,
+            financial_assumptions=financial
+        )
+        
+        results = model.run_analysis()
+        
+        return {"success": True, "results": results}
+        
+    except Exception as e:
+        return {"success": False, "message": str(e)}
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
