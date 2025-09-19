@@ -1798,8 +1798,8 @@ async def get_customer_match_projects(
             "projects_after_capacity_filtering": len(filtered_projects)
         }
     }
-    @app.post("/api/financial-model")
-    async def calculate_financial_model_endpoint(request: dict):
+@app.post("/api/financial-model")
+async def calculate_financial_model_endpoint(request: dict):
     """Simple endpoint that calls your existing renewable_model.py"""
     try:
         from renewable_model import (
@@ -1846,5 +1846,6 @@ async def get_customer_match_projects(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
