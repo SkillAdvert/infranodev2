@@ -10,7 +10,17 @@ import time
 from math import radians, sin, cos, asin, sqrt
 
 load_dotenv()
-
+try:
+    from backend.renewable_model import (
+        RenewableFinancialModel, TechnologyParams, MarketPrices, 
+        FinancialAssumptions, TechnologyType, ProjectType, MarketRegion
+    )
+    FINANCIAL_MODEL_AVAILABLE = True
+    print("✅ Financial model imported successfully")
+except ImportError as e:
+    print(f"⚠️ Financial model not available: {e}")
+    FINANCIAL_MODEL_AVAILABLE = False
+    
 app = FastAPI(title="Infranodal API", version="2.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
@@ -1798,54 +1808,277 @@ async def get_customer_match_projects(
             "projects_after_capacity_filtering": len(filtered_projects)
         }
     }
-@app.post("/api/financial-model")
-async def calculate_financial_model_endpoint(request: dict):
-    """Simple endpoint that calls your existing renewable_model.py"""
+# Financial Model Request/Response Models
+class FinancialModelRequest(BaseModel):
+    # Basic project information
+    technology: str
+    capacity_mw: float
+    capacity_factor: float
+    project_life: int
+    degradation: float
+    
+    # Cost information
+    capex_per_kw: float
+    devex_abs: float
+    devex_pct: float
+    opex_fix_per_mw_year: float
+    opex_var_per_mwh: float
+    tnd_costs_per_year: float
+    
+    # Revenue information
+    ppa_price: float
+    ppa_escalation: float
+    ppa_duration: int
+    merchant_price: float
+    capacity_market_per_mw_year: float
+    ancillary_per_mw_year: float
+    
+    # Financial information
+    discount_rate: float
+    inflation_rate: float
+    tax_rate: float = 0.19
+    grid_savings_factor: float
+    
+    # Optional battery information
+    battery_capacity_mwh: Optional[float] = None
+    battery_capex_per_mwh: Optional[float] = None
+    battery_cycles_per_year: Optional[int] = None
+
+class RevenueBreakdown(BaseModel):
+    energyRev: float
+    capacityRev: float
+    ancillaryRev: float
+    gridSavings: float
+    opexTotal: float
+
+class ModelResults(BaseModel):
+    irr: Optional[float]
+    npv: float
+    cashflows: List[float]
+    breakdown: RevenueBreakdown
+    lcoe: float
+    payback_simple: Optional[float]
+    payback_discounted: Optional[float]
+
+class FinancialModelResponse(BaseModel):
+    standard: ModelResults
+    autoproducer: ModelResults
+    metrics: Dict[str, float]
+    success: bool
+    message: str
+
+def map_technology_type(tech_string: str):
+    """Map frontend technology string to enum"""
+    if not FINANCIAL_MODEL_AVAILABLE:
+        return "solar_pv"
+        
+    mapping = {
+        'solar': TechnologyType.SOLAR_PV,
+        'solar_pv': TechnologyType.SOLAR_PV,
+        'wind': TechnologyType.WIND,
+        'battery': TechnologyType.BATTERY,
+        'solar_battery': TechnologyType.SOLAR_BATTERY,
+        'solar_bess': TechnologyType.SOLAR_BATTERY,
+        'wind_battery': TechnologyType.WIND_BATTERY,
+    }
+    return mapping.get(tech_string.lower(), TechnologyType.SOLAR_PV)
+
+def create_technology_params(request: FinancialModelRequest):
+    """Create TechnologyParams from request"""
+    return TechnologyParams(
+        capacity_mw=request.capacity_mw,
+        capex_per_mw=request.capex_per_kw * 1000,  # Convert kW to MW
+        opex_per_mw_year=request.opex_fix_per_mw_year,
+        degradation_rate_annual=request.degradation,
+        lifetime_years=request.project_life,
+        capacity_factor=request.capacity_factor,
+        battery_capacity_mwh=request.battery_capacity_mwh,
+        battery_capex_per_mwh=request.battery_capex_per_mwh,
+        battery_cycles_per_year=request.battery_cycles_per_year,
+    )
+
+def create_utility_market_prices(request: FinancialModelRequest):
+    """Create MarketPrices for utility-scale project"""
+    return MarketPrices(
+        base_power_price=request.merchant_price,
+        power_price_escalation=0.025,  # 2.5% default
+        ppa_price=request.ppa_price,
+        ppa_duration_years=request.ppa_duration,
+        ppa_escalation=request.ppa_escalation,
+        ppa_percentage=0.7,  # 70% under PPA
+        capacity_payment=request.capacity_market_per_mw_year / 1000,  # Convert to £/kW
+        frequency_response_price=request.ancillary_per_mw_year / (8760 * 0.1) if request.ancillary_per_mw_year > 0 else 0,
+    )
+
+def create_btm_market_prices(request: FinancialModelRequest):
+    """Create MarketPrices for behind-the-meter project"""
+    # Calculate first year generation for grid savings conversion
+    annual_generation = request.capacity_mw * 8760 * request.capacity_factor
+    grid_savings_per_mwh = (request.grid_savings_factor * request.tnd_costs_per_year) / annual_generation if annual_generation > 0 else 0
+    
+    return MarketPrices(
+        base_power_price=request.merchant_price,
+        power_price_escalation=0.025,
+        retail_electricity_price=request.ppa_price,  # Use PPA price as retail equivalent
+        retail_price_escalation=request.ppa_escalation,
+        grid_charges=grid_savings_per_mwh,
+        demand_charges=0,  # Simplified for now
+    )
+
+def extract_revenue_breakdown(cashflow_df) -> RevenueBreakdown:
+    """Extract revenue breakdown from cashflow DataFrame"""
+    if cashflow_df is None or len(cashflow_df) == 0:
+        return RevenueBreakdown(
+            energyRev=0, capacityRev=0, ancillaryRev=0, 
+            gridSavings=0, opexTotal=0
+        )
+    
+    # Sum revenues across all years (excluding year 0)
+    operating_years = cashflow_df[cashflow_df['year'] > 0]
+    
+    energy_rev = 0
+    capacity_rev = 0
+    ancillary_rev = 0
+    grid_savings = 0
+    opex_total = operating_years['opex'].sum() if 'opex' in operating_years.columns else 0
+    
+    # Sum revenue streams if they exist
+    for col in operating_years.columns:
+        if col.startswith('revenue_'):
+            values = operating_years[col].sum()
+            if 'ppa' in col or 'merchant' in col or 'energy_savings' in col:
+                energy_rev += values
+            elif 'capacity' in col:
+                capacity_rev += values
+            elif 'frequency_response' in col or 'ancillary' in col:
+                ancillary_rev += values
+            elif 'grid_charges' in col:
+                grid_savings += values
+    
+    return RevenueBreakdown(
+        energyRev=energy_rev,
+        capacityRev=capacity_rev,
+        ancillaryRev=ancillary_rev,
+        gridSavings=grid_savings,
+        opexTotal=opex_total,
+    )
+
+@app.post("/api/financial-model", response_model=FinancialModelResponse)
+async def calculate_financial_model(request: FinancialModelRequest):
+    """Calculate financial model for both utility-scale and behind-the-meter scenarios"""
+    
+    if not FINANCIAL_MODEL_AVAILABLE:
+        raise HTTPException(500, "Financial model not available - renewable_model.py not found")
+    
     try:
-        from renewable_model import (
-            RenewableFinancialModel, TechnologyParams, MarketPrices, 
-            FinancialAssumptions, TechnologyType, ProjectType, MarketRegion
+        print(f"🔄 Processing financial model request: {request.technology}, {request.capacity_mw}MW")
+        
+        # Create common parameters
+        tech_params = create_technology_params(request)
+        financial_assumptions = FinancialAssumptions(
+            discount_rate=request.discount_rate,
+            inflation_rate=request.inflation_rate,
+            tax_rate=request.tax_rate,
         )
         
-        # Create the model using your existing classes
-        tech_params = TechnologyParams(
-            capacity_mw=request['capacity_mw'],
-            capex_per_mw=request['capex_per_kw'] * 1000,
-            opex_per_mw_year=request['opex_fix_per_mw_year'],
-            degradation_rate_annual=request['degradation'],
-            lifetime_years=request['project_life']
-        )
+        # Technology type mapping
+        tech_type = map_technology_type(request.technology)
         
-        market_prices = MarketPrices(
-            base_power_price=request['ppa_price'],
-            ppa_price=request['ppa_price']
-        )
-        
-        financial = FinancialAssumptions(
-            discount_rate=request['discount_rate'],
-            inflation_rate=request['inflation_rate']
-        )
-        
-        # Run your existing model
-        model = RenewableFinancialModel(
-            project_name="API Request",
-            technology_type=TechnologyType.SOLAR_PV,
+        # Create utility-scale model
+        utility_prices = create_utility_market_prices(request)
+        utility_model = RenewableFinancialModel(
+            project_name="Utility Scale Analysis",
+            technology_type=tech_type,
             project_type=ProjectType.UTILITY_SCALE,
             market_region=MarketRegion.UK,
             technology_params=tech_params,
-            market_prices=market_prices,
-            financial_assumptions=financial
+            market_prices=utility_prices,
+            financial_assumptions=financial_assumptions,
         )
         
-        results = model.run_analysis()
+        # Create behind-the-meter model
+        btm_prices = create_btm_market_prices(request)
+        btm_model = RenewableFinancialModel(
+            project_name="Behind-the-Meter Analysis",
+            technology_type=tech_type,
+            project_type=ProjectType.BEHIND_THE_METER,
+            market_region=MarketRegion.UK,
+            technology_params=tech_params,
+            market_prices=btm_prices,
+            financial_assumptions=financial_assumptions,
+        )
         
-        return {"success": True, "results": results}
+        # Run analyses
+        print("🔄 Running utility-scale analysis...")
+        utility_results = utility_model.run_analysis()
+        print("🔄 Running behind-the-meter analysis...")
+        btm_results = btm_model.run_analysis()
+        
+        # Extract cashflows
+        utility_cashflows = utility_model.cashflow_df['net_cashflow'].tolist()
+        btm_cashflows = btm_model.cashflow_df['net_cashflow'].tolist()
+        
+        # Extract revenue breakdowns
+        utility_breakdown = extract_revenue_breakdown(utility_model.cashflow_df)
+        btm_breakdown = extract_revenue_breakdown(btm_model.cashflow_df)
+        
+        # Calculate metrics
+        irr_uplift = (btm_results['irr'] - utility_results['irr']) if (btm_results['irr'] and utility_results['irr']) else 0
+        npv_delta = btm_results['npv'] - utility_results['npv']
+        
+        print(f"✅ Financial analysis complete: Utility IRR={utility_results['irr']:.3f}, BTM IRR={btm_results['irr']:.3f}")
+        
+        # Build response
+        response = FinancialModelResponse(
+            standard=ModelResults(
+                irr=utility_results['irr'],
+                npv=utility_results['npv'],
+                cashflows=utility_cashflows,
+                breakdown=utility_breakdown,
+                lcoe=utility_results['lcoe'],
+                payback_simple=utility_results['payback_simple'],
+                payback_discounted=utility_results['payback_discounted'],
+            ),
+            autoproducer=ModelResults(
+                irr=btm_results['irr'],
+                npv=btm_results['npv'],
+                cashflows=btm_cashflows,
+                breakdown=btm_breakdown,
+                lcoe=btm_results['lcoe'],
+                payback_simple=btm_results['payback_simple'],
+                payback_discounted=btm_results['payback_discounted'],
+            ),
+            metrics={
+                'total_capex': utility_results['capex_total'],
+                'capex_per_mw': utility_results['capex_per_mw'],
+                'irr_uplift': irr_uplift,
+                'npv_delta': npv_delta,
+                'annual_generation': request.capacity_mw * 8760 * request.capacity_factor,
+            },
+            success=True,
+            message="Financial analysis completed successfully"
+        )
+        
+        return response
         
     except Exception as e:
-        return {"success": False, "message": str(e)}
+        import traceback
+        error_msg = f"Financial model calculation failed: {str(e)}"
+        print(f"❌ {error_msg}")
+        print(f"Traceback: {traceback.format_exc()}")
+        
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "success": False,
+                "message": error_msg,
+                "error_type": type(e).__name__
+            }
+        )
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
