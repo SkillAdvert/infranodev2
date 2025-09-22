@@ -1,4 +1,4 @@
-Infranodal - Renewable Energy Investment Analysis Platform
+Peaknode - Connecting underutilized renewables to demand
 Project Overview
 Interactive web application enabling renewable energy investors and data center developers to assess site viability through AI-powered infrastructure scoring. The platform combines existing project databases with real-time infrastructure analysis, providing investment ratings from 1.0-10.0 based on persona-specific algorithms and comprehensive proximity scoring, now enhanced with TNUoS transmission cost integration.
 Current Architecture Status (December 2024)
