@@ -397,7 +397,7 @@ class RenewableFinancialModel:
             discount_factor = 1 / (1 + self.financial.discount_rate) ** year
             pv_costs += opex * discount_factor
         
-        lcoe = pv_costs / pv_generation if pv_generation > 0 else float('inf')
+        lcoe = (pv_costs / 1000) / pv_generation if pv_generation > 0 else float('inf')
         return lcoe
     
     def calculate_irr(self) -> float:
