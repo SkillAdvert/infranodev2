@@ -932,68 +932,6 @@ def calculate_persona_weighted_score(
         "nearest_infrastructure": proximity_scores.get("nearest_distances", {}),
     }
 
-
-@app.get("/api/projects/enhanced")
-async def get_enhanced_geojson(
-    limit: int = Query(1000, description="Number of projects to process"),
-    persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring"),
-    apply_capacity_filter: bool = Query(True, description="Filter projects by persona capacity requirements"),
-    custom_weights: Optional[str] = Query(None, description="JSON string of custom weights (overrides persona)"),
-    scoring_method: Literal["weighted_sum", "topsis"] = Query(
-        "weighted_sum",
-        description="Scoring method to apply (weighted_sum or topsis)",
-    ),
-    dc_demand_mw: Optional[float] = Query(None, description="DC facility demand in MW for capacity gating"),
-    source_table: str = Query(
-        "renewable_projects",
-        description="Source table - will be demand_sites for power devs in future",
-    ),
-) -> Dict[str, Any]:
-    start_time = time.time()
-    parsed_custom_weights = None
-    if custom_weights:
-        try:
-            parsed_custom_weights = json.loads(custom_weights)
-            total = sum(parsed_custom_weights.values())
-            if total and abs(total - 1.0) > 0.01:
-                parsed_custom_weights = {key: value / total for key, value in parsed_custom_weights.items()}
-        except (json.JSONDecodeError, AttributeError):
-            parsed_custom_weights = None
-
-    active_scoring_method = scoring_method.lower()
-    use_topsis = active_scoring_method == "topsis"
-    scoring_mode = "custom weights" if parsed_custom_weights else ("persona-based" if persona else "renewable energy")
-    print(
-        "🚀 ENHANCED ENDPOINT WITH "
-        f"{scoring_mode.upper()} SCORING [{active_scoring_method.upper()}] - Processing {limit} projects..."
-    )
-
-    try:
-        projects = await query_supabase(f"{source_table}?select=*&limit={limit}")
-        print(f"✅ Loaded {len(projects)} projects from {source_table}")
-        if source_table != "renewable_projects":
-            print(f"⚠️ Note: {source_table} table requested but using renewable_projects as placeholder")
-        if persona and apply_capacity_filter:
-            original_count = len(projects)
-            projects = filter_projects_by_persona_capacity(projects, persona)
-            print(f"🎯 Filtered to {len(projects)} projects for {persona} (was {original_count})")
-        if persona:
-            dc_thresholds = {"hyperscaler": 50.0, "colocation": 5.0, "edge_computing": 1.0}
-            min_capacity = dc_thresholds.get(persona, 1.0)
-            capacity_gated: List[Dict[str, Any]] = []
-            for project in projects:
-                project_capacity = project.get("capacity_mw", 0) or 0
-                if project_capacity >= min_capacity * 0.9:
-                    capacity_gated.append(project)
-            if len(capacity_gated) != len(projects):
-                print(
-                    f"⚡ Capacity gating: {len(capacity_gated)}/{len(projects)} projects meet minimum capacity for {persona}"
-                )
-            projects = capacity_gated
-    except Exception as exc:
-        print(f"❌ Database error: {exc}")
-        return {"error": "Database connection failed", "type": "FeatureCollection", "features": []}
-
 def calculate_persona_topsis_score(
     component_scores: Sequence[Dict[str, float]],
     weights: Dict[str, float],
@@ -2515,4 +2453,5 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
