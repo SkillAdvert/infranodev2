@@ -193,9 +193,27 @@ class RenewableFinancialModel:
         
         return generation
     
+    def _get_power_price(self, year: int) -> float:
+        """
+        Centralized wholesale power price retrieval with input validation.
+        Returns the power price for the given year using either price curve or escalated base price.
+        """
+        if not year or year < 1:
+            raise ValueError(f"Invalid year: {year}")
+            
+        if self.market_prices.power_price_curve and year <= len(self.market_prices.power_price_curve):
+            return self.market_prices.power_price_curve[year - 1]
+        else:
+            if not self.market_prices.base_power_price:
+                raise ValueError("No base power price provided and no price curve available")
+            power_price_escalation = (1 + self.market_prices.power_price_escalation) ** (year - 1)
+            return self.market_prices.base_power_price * power_price_escalation
+    
     def calculate_revenues(self, year: int, generation: Dict[str, float]) -> Dict[str, float]:
-        print(f"DEBUG: calculate_revenues called for year {year}, project_type: {self.project_type}")
+        print("🔥🔥🔥 DEBUGGING: calculate_revenues called - YOUR CHANGES ARE LIVE 🔥🔥🔥")
+   
         """Calculate all revenue streams"""
+        power_price = 50.0
         revenues = {}
         
         total_generation = sum([g for k, g in generation.items() if k != 'battery_throughput'])
@@ -246,6 +264,13 @@ class RenewableFinancialModel:
                 )
         
         elif self.project_type == ProjectType.BEHIND_THE_METER:
+            
+            base_price = self.market_prices.base_power_price or 45.0
+            if self.market_prices.power_price_curve and year <= len(self.market_prices.power_price_curve):
+                power_price = self.market_prices.power_price_curve[year - 1]
+            else:
+                power_price_escalation = (1 + self.market_prices.power_price_escalation) ** (year - 1)
+                power_price = base_price * power_price_escalation  # <-- FIXED: Use base_price instead
             # Calculate self-consumption savings
             retail_escalation = (1 + self.market_prices.retail_price_escalation) ** (year - 1)
             retail_price = self.market_prices.retail_electricity_price * retail_escalation
@@ -274,6 +299,7 @@ class RenewableFinancialModel:
                 # Simplified assumption: 30% exported
                 export_generation = total_generation * 0.3
             
+            # NOW power_price is defined, so we can use it for export_price
             export_price = power_price * 0.9  # Assume 90% of wholesale price for exports
             revenues['export'] = export_generation * export_price
         
