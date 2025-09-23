@@ -210,7 +210,7 @@ class RenewableFinancialModel:
             return self.market_prices.base_power_price * power_price_escalation
     
     def calculate_revenues(self, year: int, generation: Dict[str, float]) -> Dict[str, float]:
-        print("🔥🔥🔥 DEBUGGING: calculate_revenues called - YOUR CHANGES ARE LIVE 🔥🔥🔥")
+      
    
         """Calculate all revenue streams"""
         power_price = 50.0
