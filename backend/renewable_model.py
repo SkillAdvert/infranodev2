@@ -194,6 +194,7 @@ class RenewableFinancialModel:
         return generation
     
     def calculate_revenues(self, year: int, generation: Dict[str, float]) -> Dict[str, float]:
+        print(f"DEBUG: calculate_revenues called for year {year}, project_type: {self.project_type}")
         """Calculate all revenue streams"""
         revenues = {}
         
