@@ -1817,6 +1817,7 @@ async def get_enhanced_geojson(
                 "technology_type": project["technology_type"],
                 "operator": project.get("operator"),
                 "capacity_mw": project.get("capacity_mw"),
+                "development_status_short": project.get("development_status_short"),
                 "county": project.get("county"),
                 "country": project.get("country"),
                 "investment_rating": rating_result["investment_rating"],
@@ -2453,5 +2454,6 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
