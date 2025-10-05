@@ -94,6 +94,13 @@ PERSONA_CAPACITY_RANGES = {
     "hyperscaler": {"min": 50, "max": 1000},
 }
 
+PERSONA_CAPACITY_PARAMS = {
+    "edge_computing": {"min_mw": 1.0, "ideal_mw": 6.0, "max_mw": 20.0},
+    "colocation": {"min_mw": 5.0, "ideal_mw": 30.0, "max_mw": 75.0},
+    "hyperscaler": {"min_mw": 50.0, "ideal_mw": 150.0, "max_mw": 400.0},
+    "default": {"min_mw": 50.0, "ideal_mw": 150.0, "max_mw": 300.0},
+}
+
 LCOE_CONFIG = {
     "baseline_pounds_per_mwh": 55.0,
     "gamma_slope": 0.04,
@@ -476,6 +483,15 @@ INFRASTRUCTURE_SEARCH_RADIUS_KM = {
 }
 
 
+INFRASTRUCTURE_HALF_DISTANCE_KM = {
+    "substation": 30.0,
+    "transmission": 30.0,
+    "fiber": 15.0,
+    "ixp": 15.0,
+    "water": 25.0,
+}
+
+
 def _grid_steps_for_radius(grid: SpatialGrid, radius_km: float) -> int:
     cell_width_km = max(1.0, grid.approximate_cell_width_km())
     return max(1, int(math.ceil(radius_km / cell_width_km)) + 1)
@@ -662,60 +678,14 @@ def get_rating_description(score_out_of_100: float) -> str:
 
 
 def calculate_capacity_component_score(capacity_mw: float, persona: Optional[str] = None) -> float:
-    if not persona or persona == "custom":
-        if capacity_mw >= 250:
-            return 125.0
-        if capacity_mw >= 100:
-            return 100.0
-        if capacity_mw >= 50:
-            return 85.0
-        if capacity_mw >= 25:
-            return 70.0
-        if capacity_mw >= 10:
-            return 55.0
-        if capacity_mw >= 5:
-            return 40.0
-        if capacity_mw >= 1:
-            return 25.0
-        return 10.0
-
-    if persona == "hyperscaler":
-        if 50 <= capacity_mw <= 200:
-            return 100.0
-        if 25 <= capacity_mw < 50:
-            return 60.0 + (capacity_mw - 25) * (25.0 / 25)
-        if 200 < capacity_mw <= 400:
-            excess = (capacity_mw - 200) / 200
-            return max(70.0, 85.0 - (excess * 15))
-        if capacity_mw > 400:
-            return max(40.0, 70.0 - ((capacity_mw - 400) / 100) * 10)
-        return max(20.0, capacity_mw * 2)
-
-    if persona == "colocation":
-        if 10 <= capacity_mw <= 50:
-            return 100.0
-        if 5 <= capacity_mw < 10:
-            return 70.0 + (capacity_mw - 5) * (15.0 / 5)
-        if 50 < capacity_mw <= 100:
-            excess = (capacity_mw - 50) / 50
-            return max(60.0, 85.0 - (excess * 25))
-        if capacity_mw > 100:
-            return max(30.0, 60.0 - ((capacity_mw - 100) / 50) * 15)
-        return max(30.0, capacity_mw * 6)
-
-    if persona == "edge_computing":
-        if 1 <= capacity_mw <= 10:
-            return 100.0
-        if 0.5 <= capacity_mw < 1:
-            return 60.0 + (capacity_mw - 0.5) * (25.0 / 0.5)
-        if 10 < capacity_mw <= 25:
-            excess = (capacity_mw - 10) / 15
-            return max(40.0, 85.0 - (excess * 45))
-        if capacity_mw > 25:
-            return max(20.0, 40.0 - ((capacity_mw - 25) / 25) * 15)
-        return max(10.0, capacity_mw * 20)
-
-    return 50.0
+    persona_key = (persona or "default").lower()
+    if persona_key == "custom":
+        persona_key = "default"
+    params = PERSONA_CAPACITY_PARAMS.get(persona_key, PERSONA_CAPACITY_PARAMS["default"])
+    ideal = params.get("ideal_mw", 150.0)
+    logistic_argument = capacity_mw - ideal
+    score = 100.0 / (1.0 + math.exp(-0.05 * logistic_argument))
+    return max(0.0, min(100.0, float(score)))
 
 
 def calculate_development_stage_score(status: str, perspective: str = "demand") -> float:
@@ -759,71 +729,60 @@ def calculate_technology_score(tech_type: str) -> float:
 
 
 def calculate_grid_infrastructure_score(proximity_scores: Dict[str, float]) -> float:
-    substation_score = proximity_scores.get("substation_score", 0.0)
-    transmission_score = proximity_scores.get("transmission_score", 0.0)
-    grid_score = 10.0
-    if substation_score > 30:
-        grid_score += 50.0
-    elif substation_score > 20:
-        grid_score += 30.0
-    elif substation_score > 10:
-        grid_score += 15.0
-    if transmission_score > 30:
-        grid_score += 40.0
-    elif transmission_score > 15:
-        grid_score += 20.0
-    return min(100.0, grid_score)
+    distances = proximity_scores.get("nearest_distances", {})
+    substation_distance = distances.get("substation_km")
+    transmission_distance = distances.get("transmission_km")
+
+    substation_raw = 0.0
+    if substation_distance is not None:
+        substation_raw = math.exp(-substation_distance / INFRASTRUCTURE_HALF_DISTANCE_KM["substation"])
+    transmission_raw = 0.0
+    if transmission_distance is not None:
+        transmission_raw = math.exp(-transmission_distance / INFRASTRUCTURE_HALF_DISTANCE_KM["transmission"])
+
+    score = 50.0 * (substation_raw + transmission_raw)
+    return max(0.0, min(100.0, float(score)))
 
 
 def calculate_digital_infrastructure_score(proximity_scores: Dict[str, float]) -> float:
-    fiber_score = proximity_scores.get("fiber_score", 0.0)
-    ixp_score = proximity_scores.get("ixp_score", 0.0)
-    digital_score = 10.0
-    if fiber_score > 15:
-        digital_score += 40.0
-    elif fiber_score > 8:
-        digital_score += 25.0
-    elif fiber_score > 3:
-        digital_score += 10.0
-    if ixp_score > 8:
-        digital_score += 35.0
-    elif ixp_score > 4:
-        digital_score += 20.0
-    elif ixp_score > 1:
-        digital_score += 10.0
-    return min(100.0, digital_score)
+    distances = proximity_scores.get("nearest_distances", {})
+    fiber_distance = distances.get("fiber_km")
+    ixp_distance = distances.get("ixp_km")
+
+    fiber_raw = 0.0
+    if fiber_distance is not None:
+        fiber_raw = math.exp(-fiber_distance / INFRASTRUCTURE_HALF_DISTANCE_KM["fiber"])
+    ixp_raw = 0.0
+    if ixp_distance is not None:
+        ixp_raw = math.exp(-ixp_distance / INFRASTRUCTURE_HALF_DISTANCE_KM["ixp"])
+
+    score = 50.0 * (fiber_raw + ixp_raw)
+    return max(0.0, min(100.0, float(score)))
 
 
 def calculate_water_resources_score(proximity_scores: Dict[str, float]) -> float:
-    water_score = proximity_scores.get("water_score", 0.0)
-    if water_score > 10:
-        return 100.0
-    if water_score > 5:
-        return 80.0
-    if water_score > 2:
-        return 60.0
-    return 40.0
+    distances = proximity_scores.get("nearest_distances", {})
+    water_distance = distances.get("water_km")
+    water_raw = 0.0
+    if water_distance is not None:
+        water_raw = math.exp(-water_distance / INFRASTRUCTURE_HALF_DISTANCE_KM["water"])
+    score = 100.0 * water_raw
+    return max(0.0, min(100.0, float(score)))
 
 
-def calculate_lcoe_score(project_lat: float, project_lng: float, technology_type: str) -> float:
-    tech_lcoe = {
-        "solar": 52.0,
-        "wind": 48.0,
-        "battery": 60.0,
-        "hybrid": 50.0,
-        "offshore wind": 45.0,
-        "onshore wind": 48.0,
+def calculate_lcoe_score(development_status_short: str) -> float:
+    status_map = {
+        "operational": 100.0,
+        "under construction": 85.0,
+        "consented": 70.0,
+        "in planning": 50.0,
+        "site identified": 30.0,
+        "concept": 10.0,
+        "unknown": 40.0,
     }
-    tech_key = str(technology_type).lower()
-    lcoe = tech_lcoe.get(tech_key, LCOE_CONFIG["baseline_pounds_per_mwh"])
-    baseline = LCOE_CONFIG["baseline_pounds_per_mwh"]
-    gamma = LCOE_CONFIG["gamma_slope"]
-    if lcoe <= baseline:
-        score = 100.0
-    else:
-        penalty = lcoe - baseline
-        score = 100.0 * (math.e ** (-gamma * penalty))
-    return min(100.0, max(10.0, score))
+    normalized = (development_status_short or "unknown").strip().lower()
+    score = status_map.get(normalized, status_map["unknown"])
+    return max(0.0, min(100.0, float(score)))
 
 
 def calculate_tnuos_score(project_lat: float, project_lng: float) -> float:
@@ -860,11 +819,7 @@ def build_persona_component_scores(
     grid_score = calculate_grid_infrastructure_score(proximity_scores)
     digital_score = calculate_digital_infrastructure_score(proximity_scores)
     water_score = calculate_water_resources_score(proximity_scores)
-    lcoe_score = calculate_lcoe_score(
-        project.get("latitude", 0),
-        project.get("longitude", 0),
-        project.get("technology_type", ""),
-    )
+    lcoe_score = calculate_lcoe_score(project.get("development_status_short", ""))
     tnuos_score = calculate_tnuos_score(
         project.get("latitude", 0),
         project.get("longitude", 0),
@@ -910,7 +865,7 @@ def calculate_persona_weighted_score(
         + component_scores["tnuos_transmission_costs"] * weights.get("tnuos_transmission_costs", 0.0)
     )
 
-    final_internal_score = min(100.0, max(10.0, weighted_score))
+    final_internal_score = max(0.0, min(100.0, weighted_score))
     display_rating = final_internal_score / 10.0
     color = get_color_from_score(final_internal_score)
     description = get_rating_description(final_internal_score)
@@ -1019,7 +974,7 @@ def calculate_custom_weighted_score(
     grid_score = calculate_grid_infrastructure_score(proximity_scores)
     digital_score = calculate_digital_infrastructure_score(proximity_scores)
     water_score = calculate_water_resources_score(proximity_scores)
-    lcoe_score = calculate_lcoe_score(project.get("latitude", 0), project.get("longitude", 0), project.get("technology_type", ""))
+    lcoe_score = calculate_lcoe_score(project.get("development_status_short", ""))
     tnuos_score = calculate_tnuos_score(project.get("latitude", 0), project.get("longitude", 0))
 
     weighted_score = (
@@ -1033,7 +988,7 @@ def calculate_custom_weighted_score(
         + tnuos_score * custom_weights.get("tnuos_transmission_costs", 0.0)
     )
 
-    final_internal_score = min(100.0, max(10.0, weighted_score))
+    final_internal_score = max(0.0, min(100.0, weighted_score))
     display_rating = final_internal_score / 10.0
     color = get_color_from_score(final_internal_score)
     description = get_rating_description(final_internal_score)
@@ -1121,7 +1076,7 @@ def calculate_base_investment_score_renewable(project: Dict[str, Any]) -> float:
         tech_score = 60.0
 
     base_score = capacity_score * 0.30 + stage_score * 0.50 + tech_score * 0.20
-    return min(100.0, max(10.0, base_score))
+    return max(0.0, min(100.0, base_score))
 
 
 def calculate_infrastructure_bonus_renewable(proximity_scores: Dict[str, float]) -> float:
