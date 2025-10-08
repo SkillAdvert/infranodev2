@@ -54,37 +54,34 @@ KM_PER_DEGREE_LAT = 111.32
 INFRASTRUCTURE_CACHE_TTL_SECONDS = int(os.getenv("INFRA_CACHE_TTL", "600"))
 GRID_CELL_DEGREES = 0.5
 
-# Updated persona weights matching 8 business criteria
+# Updated persona weights matching 7 business criteria
 PERSONA_WEIGHTS: Dict[str, Dict[str, float]] = {
     "hyperscaler": {
-        "capacity": 0.22,                    # 22% - Large capacity critical
-        "connection_speed": 0.15,            # 15% - Fast grid access important
-        "resilience": 0.12,                  # 12% - Backup infrastructure needed
-        "decarbonisation": 0.10,             # 10% - Prefer renewables
-        "land_planning": 0.18,               # 18% - Want shovel-ready sites
-        "latency": 0.05,                     # 5% - Not critical for hyperscale
-        "cooling": 0.13,                     # 13% - Critical for high-density
-        "price_sensitivity": 0.05,           # 5% - Less price-sensitive (quality matters)
+        "capacity": 0.244,                   # 24.4% - Large capacity critical
+        "connection_speed": 0.167,           # 16.7% - Fast grid access important
+        "resilience": 0.133,                 # 13.3% - Backup infrastructure needed
+        "land_planning": 0.2,                # 20.0% - Want shovel-ready sites
+        "latency": 0.056,                    # 5.6% - Not critical for hyperscale
+        "cooling": 0.144,                    # 14.4% - Critical for high-density
+        "price_sensitivity": 0.056,          # 5.6% - Less price-sensitive (quality matters)
     },
     "colocation": {
-        "capacity": 0.13,                    # 13% - Moderate capacity
-        "connection_speed": 0.15,            # 15% - Reliable connection important
-        "resilience": 0.18,                  # 18% - Multi-tenant needs redundancy
-        "decarbonisation": 0.08,             # 8% - Green preferred but flexible
-        "land_planning": 0.15,               # 15% - Want ready sites
-        "latency": 0.20,                     # 20% - Critical for tenant diversity
-        "cooling": 0.08,                     # 8% - Important but manageable
-        "price_sensitivity": 0.03,           # 3% - Cost matters but not primary
+        "capacity": 0.141,                   # 14.1% - Moderate capacity
+        "connection_speed": 0.163,           # 16.3% - Reliable connection important
+        "resilience": 0.196,                 # 19.6% - Multi-tenant needs redundancy
+        "land_planning": 0.163,              # 16.3% - Want ready sites
+        "latency": 0.217,                    # 21.7% - Critical for tenant diversity
+        "cooling": 0.087,                    # 8.7% - Important but manageable
+        "price_sensitivity": 0.033,          # 3.3% - Cost matters but not primary
     },
     "edge_computing": {
-        "capacity": 0.09,                    # 9% - Small footprint
-        "connection_speed": 0.12,            # 12% - Decent connection needed
-        "resilience": 0.10,                  # 10% - Some redundancy
-        "decarbonisation": 0.07,             # 7% - Flexible on energy source
-        "land_planning": 0.26,               # 26% - MUST be fast to deploy
-        "latency": 0.23,                     # 23% - CRITICAL for edge workloads
-        "cooling": 0.05,                     # 5% - Minimal cooling needs
-        "price_sensitivity": 0.08,           # 8% - Cost-sensitive for distributed
+        "capacity": 0.097,                   # 9.7% - Small footprint
+        "connection_speed": 0.129,           # 12.9% - Decent connection needed
+        "resilience": 0.108,                 # 10.8% - Some redundancy
+        "land_planning": 0.28,               # 28.0% - MUST be fast to deploy
+        "latency": 0.247,                    # 24.7% - CRITICAL for edge workloads
+        "cooling": 0.054,                    # 5.4% - Minimal cooling needs
+        "price_sensitivity": 0.086,          # 8.6% - Cost-sensitive for distributed
     },
 }
 
@@ -1027,7 +1024,7 @@ def build_persona_component_scores(
     user_max_price_mwh: Optional[float] = None,  # NEW parameter
 ) -> Dict[str, float]:
     """
-    Compute 8 component scores matching business criteria.
+    Compute 7 component scores matching business criteria.
 
     Args:
         project: Project data from database
@@ -1037,7 +1034,7 @@ def build_persona_component_scores(
         user_max_price_mwh: User's max acceptable price for price_sensitivity
 
     Returns:
-        Dictionary with 8 component scores (0-100 each)
+        Dictionary with 7 component scores (0-100 each)
     """
 
     # 1. Capacity - direct from existing function
@@ -1058,37 +1055,19 @@ def build_persona_component_scores(
         proximity_scores
     )
 
-    # 4. Decarbonisation - use technology scoring
-    # Pure renewables = 100, hybrid = 70, fossil = 20
-    tech_type = str(project.get("technology_type", "")).lower()
-    if "solar" in tech_type or "wind" in tech_type or "hydro" in tech_type:
-        decarbonisation_score = 100.0
-    elif "battery" in tech_type or "bess" in tech_type:
-        decarbonisation_score = 95.0
-    elif "hybrid" in tech_type:
-        decarbonisation_score = 75.0
-    elif "biomass" in tech_type:
-        decarbonisation_score = 50.0
-    elif "gas" in tech_type:
-        decarbonisation_score = 25.0
-    elif "coal" in tech_type:
-        decarbonisation_score = 10.0
-    else:
-        decarbonisation_score = 60.0  # Unknown
-
-    # 5. Land & Planning - use development stage scoring
+    # 4. Land & Planning - use development stage scoring
     land_planning_score = calculate_development_stage_score(
         project.get("development_status_short", ""),
         perspective,
     )
 
-    # 6. Latency - use digital infrastructure scoring (fiber + IXP)
+    # 5. Latency - use digital infrastructure scoring (fiber + IXP)
     latency_score = calculate_digital_infrastructure_score(proximity_scores)
 
-    # 7. Cooling - use water resources scoring
+    # 6. Cooling - use water resources scoring
     cooling_score = calculate_water_resources_score(proximity_scores)
 
-    # 8. Price Sensitivity - NEW function
+    # 7. Price Sensitivity - NEW function
     price_sensitivity_score = calculate_price_sensitivity_score(
         project,
         proximity_scores,
@@ -1099,7 +1078,6 @@ def build_persona_component_scores(
         "capacity": capacity_score,
         "connection_speed": connection_speed_score,
         "resilience": resilience_score,
-        "decarbonisation": decarbonisation_score,
         "land_planning": land_planning_score,
         "latency": latency_score,
         "cooling": cooling_score,
@@ -1114,28 +1092,27 @@ def calculate_persona_weighted_score(
     user_max_price_mwh: Optional[float] = None,  # NEW parameter
 ) -> Dict[str, Any]:
     """
-    Calculate persona-based weighted score using 8 business criteria.
+    Calculate persona-based weighted score using 7 business criteria.
 
     Args:
         user_max_price_mwh: User's maximum acceptable price (£/MWh)
     """
     weights = PERSONA_WEIGHTS[persona]
 
-    # Get 8 component scores
+    # Get 7 component scores
     component_scores = build_persona_component_scores(
-        project, 
-        proximity_scores, 
-        persona, 
+        project,
+        proximity_scores,
+        persona,
         perspective,
         user_max_price_mwh  # Pass through to price calculation
     )
 
-    # Calculate weighted score using NEW 8 components
+    # Calculate weighted score using NEW 7 components
     weighted_score = (
         component_scores["capacity"] * weights["capacity"]
         + component_scores["connection_speed"] * weights["connection_speed"]
         + component_scores["resilience"] * weights["resilience"]
-        + component_scores["decarbonisation"] * weights["decarbonisation"]
         + component_scores["land_planning"] * weights["land_planning"]
         + component_scores["latency"] * weights["latency"]
         + component_scores["cooling"] * weights["cooling"]
