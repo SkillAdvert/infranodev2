@@ -86,23 +86,23 @@ PERSONA_WEIGHTS: Dict[str, Dict[str, float]] = {
 }
 
 PERSONA_CAPACITY_RANGES = {
-    "edge_computing": {"min": 1, "max": 30},
+    "edge_computing": {"min": 0.4, "max": 5},
     "colocation": {"min": 5, "max": 50},
     "hyperscaler": {"min": 50, "max": 1000},
 }
 
 PERSONA_CAPACITY_PARAMS = {
-    "edge_computing": {"min_mw": 1.0, "ideal_mw": 6.0, "max_mw": 20.0},
-    "colocation": {"min_mw": 5.0, "ideal_mw": 30.0, "max_mw": 75.0},
-    "hyperscaler": {"min_mw": 50.0, "ideal_mw": 150.0, "max_mw": 400.0},
-    "default": {"min_mw": 50.0, "ideal_mw": 150.0, "max_mw": 300.0},
+    "edge_computing": {"min_mw": 0.4, "ideal_mw": 2.0, "max_mw": 5.0},
+    "colocation": {"min_mw": 5.0, "ideal_mw": 20.0, "max_mw": 50.0},
+    "hyperscaler": {"min_mw": 50.0, "ideal_mw": 100.0, "max_mw": 400.0},
+    "default": {"min_mw": 50.0, "ideal_mw": 100.0, "max_mw": 400.0},
 }
 
 LCOE_CONFIG = {
-    "baseline_pounds_per_mwh": 55.0,
+    "baseline_pounds_per_mwh": 60.0,
     "gamma_slope": 0.04,
-    "min_lcoe": 40.0,
-    "max_lcoe": 75.0,
+    "min_lcoe": 45.0,
+    "max_lcoe": 100.0,
     "zone_specific_rates": {},
 }
 
@@ -472,19 +472,19 @@ def _prepare_water_feature(raw_geometry: Any, payload: Dict[str, Any]) -> Option
 
 
 INFRASTRUCTURE_SEARCH_RADIUS_KM = {
-    "substation": 120.0,
+    "substation": 150.0,
     "transmission": 150.0,
-    "fiber": 120.0,
+    "fiber": 150.0,
     "ixp": 150.0,
     "water": 150.0,
 }
 
 
 INFRASTRUCTURE_HALF_DISTANCE_KM = {
-    "substation": 30.0,
-    "transmission": 30.0,
-    "fiber": 15.0,
-    "ixp": 15.0,
+    "substation": 50.0,
+    "transmission": 50.0,
+    "fiber": 25.0,
+    "ixp": 25.0,
     "water": 25.0,
 }
 
@@ -679,7 +679,7 @@ def calculate_capacity_component_score(capacity_mw: float, persona: Optional[str
     if persona_key == "custom":
         persona_key = "default"
     params = PERSONA_CAPACITY_PARAMS.get(persona_key, PERSONA_CAPACITY_PARAMS["default"])
-    ideal = params.get("ideal_mw", 150.0)
+    ideal = params.get("ideal_mw", 100.0)
     logistic_argument = capacity_mw - ideal
     score = 100.0 / (1.0 + math.exp(-0.05 * logistic_argument))
     return max(0.0, min(100.0, float(score)))
@@ -700,29 +700,31 @@ def calculate_development_stage_score(status: str, perspective: str = "demand") 
             return 30.0
         return 20.0
     if "operational" in status:
-        return 50.0
+        return 20.0
     if "construction" in status:
         return 70.0
     if "granted" in status:
         return 85.0
     if "submitted" in status:
-        return 45.0
+        return 60.0
     if "planning" in status:
         return 30.0
-    return 10.0
+    return 30.0
 
 
 def calculate_technology_score(tech_type: str) -> float:
     tech = str(tech_type).lower()
     if "solar" in tech:
-        return 70.0
+        return 80.0
     if "battery" in tech:
         return 80.0
     if "wind" in tech:
-        return 90.0
+        return 80.0
     if "hybrid" in tech:
         return 95.0
-    return 60.0
+    if "CCGT" in tech:
+        return 100
+    return 80.0
 
 
 def calculate_grid_infrastructure_score(proximity_scores: Dict[str, float]) -> float:
@@ -769,13 +771,13 @@ def calculate_water_resources_score(proximity_scores: Dict[str, float]) -> float
 
 def calculate_lcoe_score(development_status_short: str) -> float:
     status_map = {
-        "operational": 100.0,
-        "under construction": 85.0,
-        "consented": 70.0,
-        "in planning": 50.0,
-        "site identified": 30.0,
-        "concept": 10.0,
-        "unknown": 40.0,
+        "operational": 10.0,
+        "under construction": 50.0,
+        "consented": 85.0,
+        "in planning": 70.0,
+        "site identified": 50.0,
+        "concept": 30.0,
+        "unknown": 50.0,
     }
     normalized = (development_status_short or "unknown").strip().lower()
     score = status_map.get(normalized, status_map["unknown"])
@@ -823,17 +825,17 @@ def calculate_connection_speed_score(
     # Stage-based scoring (proxy for grid connection progress)
     stage_score = 0.0
     if "operational" in dev_status:
-        stage_score = 100.0  # Already connected
+        stage_score = 10.0  # Already connected
     elif "construction" in dev_status:
-        stage_score = 90.0   # Grid agreement secured, ~6 months to energisation
+        stage_score = 50.0   # Grid agreement secured, ~6 months to energisation
     elif "consented" in dev_status or "granted" in dev_status:
-        stage_score = 75.0   # Likely has grid offer, ~12-18 months
+        stage_score = 90.0   # Likely has grid offer, ~12-18 months
     elif "submitted" in dev_status or "application" in dev_status:
-        stage_score = 50.0   # In queue, ~24-36 months
+        stage_score = 70.0   # In queue, ~24-36 months
     elif "planning" in dev_status:
-        stage_score = 30.0   # Early stage, ~36+ months
+        stage_score = 50.0   # Early stage, ~36+ months
     else:
-        stage_score = 20.0   # Speculative, 48+ months
+        stage_score = 50.0   # Speculative, 48+ months
 
     # Proximity to substation (closer = faster/cheaper connection)
     distances = proximity_scores.get("nearest_distances", {})
@@ -877,38 +879,21 @@ def calculate_resilience_score(
     # Primary substation (<15km = excellent)
     substation_km = distances.get("substation_km", 999)
     if substation_km < 15:
-        backup_count += 2  # Close enough for multiple connection options
+        backup_count += 4  # Close enough for multiple connection options
     elif substation_km < 30:
-        backup_count += 1
+        backup_count += 3
 
     # Transmission line access (<40km)
     transmission_km = distances.get("transmission_km", 999)
     if transmission_km < 40:
         backup_count += 1
 
-    # Fiber network access (<20km = dual routes likely)
-    fiber_km = distances.get("fiber_km", 999)
-    if fiber_km < 10:
-        backup_count += 2  # Very close = likely multiple routes
-    elif fiber_km < 20:
-        backup_count += 1
-
-    # IXP access (<60km = good connectivity redundancy)
-    ixp_km = distances.get("ixp_km", 999)
-    if ixp_km < 60:
-        backup_count += 1
-
-    # Water resource redundancy (<35km)
-    water_km = distances.get("water_km", 999)
-    if water_km < 35:
-        backup_count += 1
-
     # Technology bonus: Battery storage = onsite firming
     tech_type = str(project.get("technology_type", "")).lower()
     if "battery" in tech_type or "bess" in tech_type:
-        backup_count += 2  # Significant resilience boost
+        backup_count += 1  # Significant resilience boost
     elif "hybrid" in tech_type:
-        backup_count += 1  # Some onsite storage
+        backup_count += 2  # Some onsite storage
 
     # Convert count to score (0-10 options mapped to 0-100)
     # Max realistic = 10 options (2+1+2+1+1+2+1 with battery)
@@ -950,23 +935,23 @@ def calculate_price_sensitivity_score(
 
     # Estimate LCOE based on technology and location
     # These are rough UK averages for reference
-    base_lcoe = 55.0  # £/MWh default
+    base_lcoe = 60.0  # £/MWh default
 
     if "solar" in tech_type:
         base_lcoe = 52.0  # Solar LCOE in UK
     elif "wind" in tech_type:
         if "offshore" in tech_type:
-            base_lcoe = 48.0  # Offshore wind (best)
+            base_lcoe = 80.0  # Offshore wind
         else:
-            base_lcoe = 50.0  # Onshore wind
+            base_lcoe = 60.0  # Onshore wind
     elif "battery" in tech_type or "bess" in tech_type:
-        base_lcoe = 60.0  # Battery arbitrage
+        base_lcoe = 65.0  # Battery arbitrage
     elif "hydro" in tech_type:
-        base_lcoe = 45.0  # Hydro (excellent)
+        base_lcoe = 70.0  # Hydro (excellent)
     elif "biomass" in tech_type:
         base_lcoe = 85.0  # Biomass (expensive)
     elif "gas" in tech_type:
-        base_lcoe = 75.0  # Gas (fuel dependent)
+        base_lcoe = 70.0  # Gas (fuel dependent)
 
     # Get TNUoS estimate (£/kW/year converted to £/MWh impact)
     # TNUoS score is 0-100, need to convert to actual cost
@@ -1289,7 +1274,7 @@ def calculate_base_investment_score_renewable(project: Dict[str, Any]) -> float:
     status = str(project.get("development_status_short", "")).lower()
     tech = str(project.get("technology_type", "")).lower()
     if capacity >= 200:
-        capacity_score = 100.0
+        capacity_score = 50.0
     elif capacity >= 100:
         capacity_score = 90.0
     elif capacity >= 50:
@@ -1304,7 +1289,7 @@ def calculate_base_investment_score_renewable(project: Dict[str, Any]) -> float:
         capacity_score = 15.0
 
     if "operational" in status:
-        stage_score = 100.0
+        stage_score = 10.0
     elif "construction" in status:
         stage_score = 90.0
     elif "granted" in status:
@@ -1319,15 +1304,15 @@ def calculate_base_investment_score_renewable(project: Dict[str, Any]) -> float:
         stage_score = 10.0
 
     if "solar" in tech:
-        tech_score = 90.0
+        tech_score = 80.0
     elif "battery" in tech:
         tech_score = 85.0
     elif "wind" in tech:
         tech_score = 80.0
     elif "hybrid" in tech:
-        tech_score = 75.0
+        tech_score = 100.0
     else:
-        tech_score = 60.0
+        tech_score = 70.0
 
     base_score = capacity_score * 0.30 + stage_score * 0.50 + tech_score * 0.20
     return max(0.0, min(100.0, base_score))
@@ -2677,6 +2662,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
