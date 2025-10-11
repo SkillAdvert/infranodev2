@@ -115,6 +115,8 @@ class UserSite(BaseModel):
     longitude: float
     commissioning_year: int
     is_btm: bool
+    capacity_factor: Optional[float] = None
+    development_status_short: Optional[str] = "planning"
 
 
 class FinancialModelRequest(BaseModel):
@@ -686,30 +688,38 @@ def calculate_capacity_component_score(capacity_mw: float, persona: Optional[str
 
 
 def calculate_development_stage_score(status: str, perspective: str = "demand") -> float:
-    status = str(status).lower()
+    status_str = str(status).lower()
+    normalized = status_str.replace("-", " ").replace("/", " ")
+
+    def has_any(substrings: Iterable[str]) -> bool:
+        return any(sub in normalized for sub in substrings)
+
+    if "operational" in normalized:
+        base_score = 20.0
+    elif "under construction" in normalized:
+        base_score = 75.0
+    elif "construction" in normalized:
+        base_score = 75.0
+    elif has_any(("granted", "consented", "approved")):
+        base_score = 95.0
+    elif has_any(("fid_ready", "fid ready", "ready-to-build", "ready to build")) or (
+        "ready" in normalized and "already" not in normalized
+    ) or "shovel" in normalized:
+        base_score = 90.0
+    elif has_any(("submitted", "application")):
+        base_score = 70.0
+    elif has_any(("scoping", "eia")):
+        base_score = 55.0
+    elif has_any(("planning", "pre planning", "pre-planning")):
+        base_score = 40.0
+    elif "concept" in normalized:
+        base_score = 25.0
+    else:
+        base_score = 30.0
+
     if perspective == "supply":
-        if "fid_ready" in status or "ready" in status:
-            return 95.0
-        if "consented" in status or "granted" in status:
-            return 85.0
-        if "submitted" in status:
-            return 65.0
-        if "planning" in status or "pre-planning" in status:
-            return 45.0
-        if "operational" in status:
-            return 30.0
-        return 20.0
-    if "operational" in status:
-        return 20.0
-    if "construction" in status:
-        return 70.0
-    if "granted" in status:
-        return 85.0
-    if "submitted" in status:
-        return 60.0
-    if "planning" in status:
-        return 30.0
-    return 30.0
+        return max(20.0, base_score)
+    return base_score
 
 
 def calculate_technology_score(tech_type: str) -> float:
@@ -799,6 +809,45 @@ def calculate_tnuos_score(project_lat: float, project_lng: float) -> float:
     return min(100.0, max(0.0, percentile_score))
 
 
+def estimate_capacity_factor(
+    tech_type: str, latitude: float, user_provided: Optional[float] = None
+) -> float:
+    """Estimate a reasonable capacity factor for the given technology."""
+
+    def clamp(value: float, minimum: float, maximum: float) -> float:
+        return max(minimum, min(maximum, value))
+
+    if user_provided is not None:
+        try:
+            return clamp(float(user_provided), 5.0, 95.0)
+        except (TypeError, ValueError):
+            # Fall back to estimation if value cannot be converted
+            pass
+
+    tech = str(tech_type).lower()
+    lat = float(latitude or 0.0)
+
+    if "solar" in tech:
+        base_cf = 12.0 - ((lat - 50.0) / 8.0) * 2.0
+        return clamp(base_cf, 9.0, 13.0)
+    if "wind" in tech:
+        if "offshore" in tech:
+            return 45.0
+        base_cf = 28.0 + ((lat - 50.0) / 8.0) * 7.0
+        return clamp(base_cf, 25.0, 38.0)
+    if "battery" in tech or "bess" in tech:
+        return 20.0
+    if "hydro" in tech:
+        return 35.0
+    if "gas" in tech or "ccgt" in tech:
+        return 55.0
+    if "biomass" in tech:
+        return 70.0
+    if "hybrid" in tech:
+        return 15.5
+    return 30.0
+
+
 def calculate_connection_speed_score(
     project: Dict[str, Any],
     proximity_scores: Dict[str, float]
@@ -820,32 +869,30 @@ def calculate_connection_speed_score(
     Returns: 0-100 score (higher = faster connection expected)
     """
     # Get development stage (indicates grid agreement likelihood)
-    dev_status = str(project.get("development_status_short", "")).lower()
+    dev_status_raw = project.get("development_status_short", "")
+    dev_status = str(dev_status_raw).lower()
 
-    # Stage-based scoring (proxy for grid connection progress)
-    stage_score = 0.0
-    if "operational" in dev_status:
-        stage_score = 10.0  # Already connected
-    elif "construction" in dev_status:
-        stage_score = 50.0   # Grid agreement secured, ~6 months to energisation
-    elif "consented" in dev_status or "granted" in dev_status:
-        stage_score = 90.0   # Likely has grid offer, ~12-18 months
-    elif "submitted" in dev_status or "application" in dev_status:
-        stage_score = 70.0   # In queue, ~24-36 months
-    elif "planning" in dev_status:
-        stage_score = 50.0   # Early stage, ~36+ months
+    base_stage_score = calculate_development_stage_score(dev_status)
+    stage_min, stage_max = 20.0, 95.0
+    if stage_max > stage_min:
+        normalized = (base_stage_score - stage_min) / (stage_max - stage_min)
+        normalized = max(0.0, min(1.0, normalized))
+        stage_score = 15.0 + (normalized * (100.0 - 15.0))
     else:
-        stage_score = 50.0   # Speculative, 48+ months
+        stage_score = base_stage_score
+    stage_score = max(15.0, min(100.0, stage_score))
 
     # Proximity to substation (closer = faster/cheaper connection)
     distances = proximity_scores.get("nearest_distances", {})
     substation_km = distances.get("substation_km", 999)
 
-    # Exponential decay: closer substations = higher score
-    proximity_score = 100.0 * math.exp(-substation_km / 15.0)
+    substation_score = 100.0 * math.exp(-substation_km / 30.0)
 
-    # Combine: 70% stage, 30% proximity
-    final_score = (stage_score * 0.70) + (proximity_score * 0.30)
+    transmission_km = distances.get("transmission_km", 999)
+    transmission_score = 100.0 * math.exp(-transmission_km / 50.0)
+
+    # Combine: 50% stage, 30% substation proximity, 20% transmission proximity
+    final_score = (stage_score * 0.50) + (substation_score * 0.30) + (transmission_score * 0.20)
 
     return max(0.0, min(100.0, final_score))
 
@@ -936,22 +983,40 @@ def calculate_price_sensitivity_score(
     # Estimate LCOE based on technology and location
     # These are rough UK averages for reference
     base_lcoe = 60.0  # £/MWh default
+    reference_cf = 0.30
 
     if "solar" in tech_type:
         base_lcoe = 52.0  # Solar LCOE in UK
+        reference_cf = 0.11
     elif "wind" in tech_type:
         if "offshore" in tech_type:
             base_lcoe = 80.0  # Offshore wind
+            reference_cf = 0.45
         else:
             base_lcoe = 60.0  # Onshore wind
+            reference_cf = 0.30
     elif "battery" in tech_type or "bess" in tech_type:
         base_lcoe = 65.0  # Battery arbitrage
+        reference_cf = 0.20
     elif "hydro" in tech_type:
         base_lcoe = 70.0  # Hydro (excellent)
+        reference_cf = 0.35
     elif "biomass" in tech_type:
         base_lcoe = 85.0  # Biomass (expensive)
-    elif "gas" in tech_type:
+        reference_cf = 0.70
+    elif "gas" in tech_type or "ccgt" in tech_type:
         base_lcoe = 70.0  # Gas (fuel dependent)
+        reference_cf = 0.55
+    elif "hybrid" in tech_type:
+        reference_cf = 0.25
+
+    user_cf = project.get("capacity_factor")
+    capacity_factor_pct = estimate_capacity_factor(tech_type, lat, user_cf)
+    capacity_factor = capacity_factor_pct / 100.0
+
+    adjusted_lcoe = base_lcoe
+    if capacity_factor > 0:
+        adjusted_lcoe = base_lcoe * (reference_cf / capacity_factor)
 
     # Get TNUoS estimate (£/kW/year converted to £/MWh impact)
     # TNUoS score is 0-100, need to convert to actual cost
@@ -968,15 +1033,19 @@ def calculate_price_sensitivity_score(
 
     # Convert £/kW/year to £/MWh impact (assuming 40% capacity factor)
     # Annual hours = 8760, capacity factor hours = 3504
-    tnuos_mwh_impact = (abs(tnuos_tariff) * 1000) / 3504  # £/MWh
+    annual_hours = 8760
+    capacity_hours = annual_hours * capacity_factor
+    tnuos_mwh_impact = (
+        (abs(tnuos_tariff) * 1000) / capacity_hours if capacity_hours > 0 else 0.0
+    )
 
     # Total estimated cost
     if tnuos_tariff < 0:
         # Negative tariff = credit, reduces cost
-        total_cost_mwh = base_lcoe + tnuos_tariff  # Adding negative = subtraction
+        total_cost_mwh = adjusted_lcoe - tnuos_mwh_impact
     else:
         # Positive tariff = charge, increases cost
-        total_cost_mwh = base_lcoe + tnuos_mwh_impact
+        total_cost_mwh = adjusted_lcoe + tnuos_mwh_impact
 
     # Score based on user's budget
     if user_max_price_mwh:
@@ -1712,7 +1781,8 @@ async def score_user_sites(
                 "longitude": site.longitude,
                 "commissioning_year": site.commissioning_year,
                 "is_btm": site.is_btm,
-                "development_status_short": "planning",
+                "development_status_short": site.development_status_short or "planning",
+                "capacity_factor": site.capacity_factor,
             }
         )
 
