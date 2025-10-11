@@ -696,9 +696,7 @@ def calculate_development_stage_score(status: str, perspective: str = "demand") 
 
     if "operational" in normalized:
         base_score = 20.0
-    elif "under construction" in normalized:
-        base_score = 75.0
-    elif "construction" in normalized:
+    elif has_any(("under construction", "construction")):
         base_score = 75.0
     elif has_any(("granted", "consented", "approved")):
         base_score = 95.0
