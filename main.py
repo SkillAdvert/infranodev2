@@ -15,9 +15,16 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+print("Booting model...")
+_boot_start_time = time.time()
+
+print("Initializing environment configuration...")
+_env_start_time = time.time()
 load_dotenv()
+print(f"[\u2713] Environment variables loaded in {time.time() - _env_start_time:.2f}s")
 
 try:
+    print("Loading renewable financial model components...")
     from backend.renewable_model import (
         FinancialAssumptions,
         MarketPrices,
@@ -29,11 +36,13 @@ try:
     )
 
     FINANCIAL_MODEL_AVAILABLE = True
-    print("✅ Financial model imported successfully")
+    print("[\u2713] Renewable financial model components loaded successfully")
 except ImportError as exc:  # pragma: no cover - handled dynamically at runtime
-    print(f"⚠️ Financial model not available: {exc}")
+    print(f"Error initializing renewable financial model components: {exc}")
     FINANCIAL_MODEL_AVAILABLE = False
 
+print("Initializing FastAPI renderer...")
+_api_start_time = time.time()
 app = FastAPI(title="Infranodal API", version="2.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -41,6 +50,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+print(f"[\u2713] FastAPI renderer initialized in {time.time() - _api_start_time:.2f}s")
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
@@ -181,7 +191,9 @@ async def query_supabase(endpoint: str) -> Any:
         response = await client.get(f"{SUPABASE_URL}/rest/v1/{endpoint}", headers=headers)
         if response.status_code == 200:
             return response.json()
-        raise HTTPException(500, f"Database error: {response.status_code}")
+        error_message = f"Database error: {response.status_code}"
+        print(f"Error initializing Supabase query for {endpoint}: {error_message}")
+        raise HTTPException(500, error_message)
 
 
 @dataclass
@@ -271,26 +283,40 @@ class InfrastructureCache:
                 return self._catalog
 
             start = time.time()
-            (
-                substations,
-                transmission_lines,
-                fiber_cables,
-                ixps,
-                water_resources,
-            ) = await asyncio.gather(
-                query_supabase("substations?select=*"),
-                query_supabase("transmission_lines?select=*"),
-                query_supabase("fiber_cables?select=*&limit=200"),
-                query_supabase("internet_exchange_points?select=*"),
-                query_supabase("water_resources?select=*"),
+            print("Loading infrastructure datasets from Supabase...")
+            dataset_start = time.time()
+            try:
+                (
+                    substations,
+                    transmission_lines,
+                    fiber_cables,
+                    ixps,
+                    water_resources,
+                ) = await asyncio.gather(
+                    query_supabase("substations?select=*"),
+                    query_supabase("transmission_lines?select=*"),
+                    query_supabase("fiber_cables?select=*&limit=200"),
+                    query_supabase("internet_exchange_points?select=*"),
+                    query_supabase("water_resources?select=*"),
+                )
+            except Exception as exc:
+                print(f"Error initializing infrastructure datasets: {exc}")
+                raise
+            print(
+                f"[\u2713] Infrastructure datasets loaded in {time.time() - dataset_start:.2f}s"
             )
 
+            print("Building infrastructure spatial indices...")
+            build_start = time.time()
             catalog = self._build_catalog(
                 substations or [],
                 transmission_lines or [],
                 fiber_cables or [],
                 ixps or [],
                 water_resources or [],
+            )
+            print(
+                f"[\u2713] Infrastructure spatial indices built in {time.time() - build_start:.2f}s"
             )
 
             elapsed = time.time() - start
@@ -390,7 +416,11 @@ class InfrastructureCache:
         )
 
 
+print("Initializing infrastructure cache subsystem...")
 INFRASTRUCTURE_CACHE = InfrastructureCache()
+print("[\u2713] Infrastructure cache subsystem ready")
+
+print(f"Model boot completed successfully in {time.time() - _boot_start_time:.2f}s.")
 
 
 
@@ -2686,7 +2716,7 @@ async def calculate_financial_model(request: FinancialModelRequest) -> Financial
             f"✅ Financial analysis complete: Utility IRR={utility_results['irr']:.3f}, "
             f"BTM IRR={btm_results['irr']:.3f}"
         )
-        return FinancialModelResponse(
+        response = FinancialModelResponse(
             standard=ModelResults(
                 irr=utility_results["irr"],
                 npv=utility_results["npv"],
@@ -2715,6 +2745,14 @@ async def calculate_financial_model(request: FinancialModelRequest) -> Financial
             success=True,
             message="Financial analysis completed successfully",
         )
+        utility_irr = utility_results.get("irr")
+        btm_irr = btm_results.get("irr")
+        print(
+            "calculating financial_model, result is "
+            f"utility IRR={utility_irr if utility_irr is not None else 'n/a'}, "
+            f"BTM IRR={btm_irr if btm_irr is not None else 'n/a'}"
+        )
+        return response
     except Exception as exc:  # pragma: no cover - forward error to client
         import traceback
         error_msg = f"Financial model calculation failed: {exc}"
