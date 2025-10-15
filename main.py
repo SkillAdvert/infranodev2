@@ -9,10 +9,15 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 
-import httpx
-from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import HTTPException, Query
+from core.clients.supabase import SupabaseClient
+from core.config import get_settings
+from apps.api import create_app
+from domain.financial.services import (
+    FinancialModelRequest,
+    FinancialModelResponse,
+    run_financial_models,
+)
 from pydantic import BaseModel
 
 print("Booting model...")
@@ -20,43 +25,20 @@ _boot_start_time = time.time()
 
 print("Initializing environment configuration...")
 _env_start_time = time.time()
-load_dotenv()
-print(f"[\u2713] Environment variables loaded in {time.time() - _env_start_time:.2f}s")
+print(f"[\u2713] Settings loaded in {time.time() - _env_start_time:.2f}s")
 
-try:
-    print("Loading renewable financial model components...")
-    from backend.renewable_model import (
-        FinancialAssumptions,
-        MarketPrices,
-        ProjectType,
-        RenewableFinancialModel,
-        TechnologyParams,
-        TechnologyType,
-        MarketRegion,
-    )
-
-    FINANCIAL_MODEL_AVAILABLE = True
-    print("[\u2713] Renewable financial model components loaded successfully")
-except ImportError as exc:  # pragma: no cover - handled dynamically at runtime
-    print(f"Error initializing renewable financial model components: {exc}")
-    FINANCIAL_MODEL_AVAILABLE = False
+FINANCIAL_MODEL_AVAILABLE = True
 
 print("Initializing FastAPI renderer...")
 _api_start_time = time.time()
-app = FastAPI(title="Infranodal API", version="2.1.0")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = create_app()
 print(f"[\u2713] FastAPI renderer initialized in {time.time() - _api_start_time:.2f}s")
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
+settings = get_settings()
+supabase_client = SupabaseClient()
 
-print(f"✅ SUPABASE_URL: {SUPABASE_URL}")
-print(f"✅ SUPABASE_KEY exists: {bool(SUPABASE_KEY)}")
+print(f"✅ SUPABASE_URL configured: {bool(settings.supabase_url)}")
+print(f"✅ SUPABASE_KEY configured: {bool(settings.supabase_key)}")
 
 PersonaType = Literal["hyperscaler", "colocation", "edge_computing"]
 
@@ -129,71 +111,15 @@ class UserSite(BaseModel):
     development_status_short: Optional[str] = "planning"
 
 
-class FinancialModelRequest(BaseModel):
-    technology: str
-    capacity_mw: float
-    capacity_factor: float
-    project_life: int
-    degradation: float
-    capex_per_kw: float
-    devex_abs: float
-    devex_pct: float
-    opex_fix_per_mw_year: float
-    opex_var_per_mwh: float
-    tnd_costs_per_year: float
-    ppa_price: float
-    ppa_escalation: float
-    ppa_duration: int
-    merchant_price: float
-    capacity_market_per_mw_year: float
-    ancillary_per_mw_year: float
-    discount_rate: float
-    inflation_rate: float
-    tax_rate: float = 0.19
-    grid_savings_factor: float
-    battery_capacity_mwh: Optional[float] = None
-    battery_capex_per_mwh: Optional[float] = None
-    battery_cycles_per_year: Optional[int] = None
-
-
-class RevenueBreakdown(BaseModel):
-    energyRev: float
-    capacityRev: float
-    ancillaryRev: float
-    gridSavings: float
-    opexTotal: float
-
-
-class ModelResults(BaseModel):
-    irr: Optional[float]
-    npv: float
-    cashflows: List[float]
-    breakdown: RevenueBreakdown
-    lcoe: float
-    payback_simple: Optional[float]
-    payback_discounted: Optional[float]
-
-
-class FinancialModelResponse(BaseModel):
-    standard: ModelResults
-    autoproducer: ModelResults
-    metrics: Dict[str, float]
-    success: bool
-    message: str
-
-
 async def query_supabase(endpoint: str) -> Any:
-    if not SUPABASE_URL or not SUPABASE_KEY:
+    if not supabase_client.is_configured:
         raise HTTPException(500, "Supabase credentials not configured")
 
-    headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(f"{SUPABASE_URL}/rest/v1/{endpoint}", headers=headers)
-        if response.status_code == 200:
-            return response.json()
-        error_message = f"Database error: {response.status_code}"
-        print(f"Error initializing Supabase query for {endpoint}: {error_message}")
-        raise HTTPException(500, error_message)
+    try:
+        return await supabase_client.fetch(endpoint)
+    except RuntimeError as exc:
+        print(f"Error initializing Supabase query for {endpoint}: {exc}")
+        raise HTTPException(500, str(exc)) from exc
 
 
 @dataclass
@@ -2576,95 +2502,7 @@ async def get_customer_match_projects(
         },
     }
 
-def map_technology_type(tech_string: str):
-    if not FINANCIAL_MODEL_AVAILABLE:
-        return "solar_pv"
-    mapping = {
-        "solar": TechnologyType.SOLAR_PV,
-        "solar_pv": TechnologyType.SOLAR_PV,
-        "wind": TechnologyType.WIND,
-        "battery": TechnologyType.BATTERY,
-        "solar_battery": TechnologyType.SOLAR_BATTERY,
-        "solar_bess": TechnologyType.SOLAR_BATTERY,
-        "wind_battery": TechnologyType.WIND_BATTERY,
-    }
-    return mapping.get(tech_string.lower(), TechnologyType.SOLAR_PV)
 
-
-def create_technology_params(request: FinancialModelRequest) -> TechnologyParams:
-    return TechnologyParams(
-        capacity_mw=request.capacity_mw,
-        capex_per_mw=request.capex_per_kw * 1000,
-        opex_per_mw_year=request.opex_fix_per_mw_year,
-        degradation_rate_annual=request.degradation,
-        lifetime_years=request.project_life,
-        capacity_factor=request.capacity_factor,
-        battery_capacity_mwh=request.battery_capacity_mwh,
-        battery_capex_per_mwh=request.battery_capex_per_mwh,
-        battery_cycles_per_year=request.battery_cycles_per_year,
-    )
-
-
-def create_utility_market_prices(request: FinancialModelRequest) -> MarketPrices:
-    return MarketPrices(
-        base_power_price=request.merchant_price,
-        power_price_escalation=0.025,
-        ppa_price=request.ppa_price,
-        ppa_duration_years=request.ppa_duration,
-        ppa_escalation=request.ppa_escalation,
-        ppa_percentage=0.7,
-        capacity_payment=request.capacity_market_per_mw_year / 1000,
-        frequency_response_price=(
-            request.ancillary_per_mw_year / (8760 * 0.1) if request.ancillary_per_mw_year > 0 else 0
-        ),
-    )
-
-
-def create_btm_market_prices(request: FinancialModelRequest) -> MarketPrices:
-    annual_generation = request.capacity_mw * 8760 * request.capacity_factor
-    grid_savings_per_mwh = (
-        (request.grid_savings_factor * request.tnd_costs_per_year) / annual_generation
-        if annual_generation > 0
-        else 0
-    )
-    return MarketPrices(
-        base_power_price=request.merchant_price,
-        power_price_escalation=0.025,
-        retail_electricity_price=request.ppa_price,
-        retail_price_escalation=request.ppa_escalation,
-        grid_charges=grid_savings_per_mwh,
-        demand_charges=0,
-    )
-
-
-def extract_revenue_breakdown(cashflow_df) -> RevenueBreakdown:
-    if cashflow_df is None or len(cashflow_df) == 0:
-        return RevenueBreakdown(energyRev=0, capacityRev=0, ancillaryRev=0, gridSavings=0, opexTotal=0)
-    operating_years = cashflow_df[cashflow_df["year"] > 0]
-    energy_rev = 0.0
-    capacity_rev = 0.0
-    ancillary_rev = 0.0
-    grid_savings = 0.0
-    opex_total = operating_years["opex"].sum() if "opex" in operating_years.columns else 0.0
-    for column in operating_years.columns:
-        if not column.startswith("revenue_"):
-            continue
-        values = operating_years[column].sum()
-        if "ppa" in column or "merchant" in column or "energy_savings" in column:
-            energy_rev += values
-        elif "capacity" in column:
-            capacity_rev += values
-        elif "frequency_response" in column or "ancillary" in column:
-            ancillary_rev += values
-        elif "grid_charges" in column:
-            grid_savings += values
-    return RevenueBreakdown(
-        energyRev=energy_rev,
-        capacityRev=capacity_rev,
-        ancillaryRev=ancillary_rev,
-        gridSavings=grid_savings,
-        opexTotal=opex_total,
-    )
 
 
 @app.post("/api/financial-model", response_model=FinancialModelResponse)
@@ -2672,96 +2510,9 @@ async def calculate_financial_model(request: FinancialModelRequest) -> Financial
     if not FINANCIAL_MODEL_AVAILABLE:
         raise HTTPException(500, "Financial model not available - renewable_model.py not found")
     try:
-        print(f"🔄 Processing financial model request: {request.technology}, {request.capacity_mw}MW")
-        tech_params = create_technology_params(request)
-        financial_assumptions = FinancialAssumptions(
-            discount_rate=request.discount_rate,
-            inflation_rate=request.inflation_rate,
-            tax_rate=request.tax_rate,
-        )
-        tech_type = map_technology_type(request.technology)
-        utility_prices = create_utility_market_prices(request)
-        utility_model = RenewableFinancialModel(
-            project_name="Utility Scale Analysis",
-            technology_type=tech_type,
-            project_type=ProjectType.UTILITY_SCALE,
-            market_region=MarketRegion.UK,
-            technology_params=tech_params,
-            market_prices=utility_prices,
-            financial_assumptions=financial_assumptions,
-        )
-        btm_prices = create_btm_market_prices(request)
-        btm_model = RenewableFinancialModel(
-            project_name="Behind-the-Meter Analysis",
-            technology_type=tech_type,
-            project_type=ProjectType.BEHIND_THE_METER,
-            market_region=MarketRegion.UK,
-            technology_params=tech_params,
-            market_prices=btm_prices,
-            financial_assumptions=financial_assumptions,
-        )
-        print("🔄 Running utility-scale analysis...")
-        utility_results = utility_model.run_analysis()
-        print("🔄 Running behind-the-meter analysis...")
-        btm_results = btm_model.run_analysis()
-        utility_cashflows = utility_model.cashflow_df["net_cashflow"].tolist()
-        btm_cashflows = btm_model.cashflow_df["net_cashflow"].tolist()
-        utility_breakdown = extract_revenue_breakdown(utility_model.cashflow_df)
-        btm_breakdown = extract_revenue_breakdown(btm_model.cashflow_df)
-        irr_uplift = (
-            (btm_results["irr"] - utility_results["irr"]) if (btm_results["irr"] and utility_results["irr"]) else 0
-        )
-        npv_delta = btm_results["npv"] - utility_results["npv"]
-        print(
-            f"✅ Financial analysis complete: Utility IRR={utility_results['irr']:.3f}, "
-            f"BTM IRR={btm_results['irr']:.3f}"
-        )
-        response = FinancialModelResponse(
-            standard=ModelResults(
-                irr=utility_results["irr"],
-                npv=utility_results["npv"],
-                cashflows=utility_cashflows,
-                breakdown=utility_breakdown,
-                lcoe=utility_results["lcoe"],
-                payback_simple=utility_results["payback_simple"],
-                payback_discounted=utility_results["payback_discounted"],
-            ),
-            autoproducer=ModelResults(
-                irr=btm_results["irr"],
-                npv=btm_results["npv"],
-                cashflows=btm_cashflows,
-                breakdown=btm_breakdown,
-                lcoe=btm_results["lcoe"],
-                payback_simple=btm_results["payback_simple"],
-                payback_discounted=btm_results["payback_discounted"],
-            ),
-            metrics={
-                "total_capex": utility_results["capex_total"],
-                "capex_per_mw": utility_results["capex_per_mw"],
-                "irr_uplift": irr_uplift,
-                "npv_delta": npv_delta,
-                "annual_generation": request.capacity_mw * 8760 * request.capacity_factor,
-            },
-            success=True,
-            message="Financial analysis completed successfully",
-        )
-        utility_irr = utility_results.get("irr")
-        btm_irr = btm_results.get("irr")
-        print(
-            "calculating financial_model, result is "
-            f"utility IRR={utility_irr if utility_irr is not None else 'n/a'}, "
-            f"BTM IRR={btm_irr if btm_irr is not None else 'n/a'}"
-        )
-        return response
+        return run_financial_models(request)
     except Exception as exc:  # pragma: no cover - forward error to client
-        import traceback
-        error_msg = f"Financial model calculation failed: {exc}"
-        print(f"❌ {error_msg}")
-        print(f"Traceback: {traceback.format_exc()}")
-        raise HTTPException(
-            status_code=500,
-            detail={"success": False, "message": error_msg, "error_type": type(exc).__name__},
-        )
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 if __name__ == "__main__":
