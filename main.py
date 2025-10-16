@@ -1681,7 +1681,7 @@ async def health() -> Dict[str, Any]:
 
 @app.get("/api/projects")
 async def get_projects(
-    limit: int = Query(1000),
+    limit: int = Query(5000),
     technology: Optional[str] = None,
     country: Optional[str] = None,
     persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring"),
@@ -1884,7 +1884,7 @@ async def score_user_sites(
 
 @app.get("/api/projects/enhanced")
 async def get_enhanced_geojson(
-    limit: int = Query(1000, description="Number of projects to process"),
+    limit: int = Query(5000, description="Number of projects to process"),
     persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring"),
     apply_capacity_filter: bool = Query(True, description="Filter projects by persona capacity requirements"),
     custom_weights: Optional[str] = Query(None, description="JSON string of custom weights (overrides persona)"),
@@ -2526,7 +2526,7 @@ async def analyze_for_power_developer(
 @app.get("/api/projects/customer-match")
 async def get_customer_match_projects(
     target_customer: PersonaType = Query("hyperscaler", description="Target customer persona"),
-    limit: int = Query(1000, description="Number of projects to analyze"),
+    limit: int = Query(5000, description="Number of projects to analyze"),
 ) -> Dict[str, Any]:
     projects = await query_supabase(f"renewable_projects?select=*&limit={limit}")
     filtered_projects = filter_projects_by_persona_capacity(projects, target_customer)
