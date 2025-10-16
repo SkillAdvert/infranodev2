@@ -187,6 +187,7 @@ async def query_supabase(endpoint: str, *, limit: Optional[int] = None, page_siz
         raise HTTPException(500, "Supabase credentials not configured")
 
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+
     if limit is not None and limit <= 0:
         return []
 
@@ -194,7 +195,8 @@ async def query_supabase(endpoint: str, *, limit: Optional[int] = None, page_siz
         separator = "&" if "?" in query else "?"
         return f"{query}{separator}limit={limit_value}"
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=30.0) as client:  # Increased timeout
+        # For small requests, single query
         if limit is None or limit <= page_size:
             endpoint_with_limit = (
                 append_limit(endpoint, limit) if limit is not None else endpoint
@@ -205,37 +207,55 @@ async def query_supabase(endpoint: str, *, limit: Optional[int] = None, page_siz
             if response.status_code == 200:
                 return response.json()
             error_message = f"Database error: {response.status_code}"
-            print(f"Error initializing Supabase query for {endpoint_with_limit}: {error_message}")
+            print(f"Error querying Supabase for {endpoint_with_limit}: {error_message}")
             raise HTTPException(500, error_message)
 
+        # For large requests, paginate
         assert limit is not None
         aggregated_results: List[Any] = []
         range_start = 0
+
         while range_start < limit:
             chunk_size = min(page_size, limit - range_start)
             paginated_headers = dict(headers)
             paginated_headers["Range"] = f"{range_start}-{range_start + chunk_size - 1}"
             endpoint_with_limit = append_limit(endpoint, chunk_size)
+
             response = await client.get(
-                f"{SUPABASE_URL}/rest/v1/{endpoint_with_limit}", headers=paginated_headers
+                f"{SUPABASE_URL}/rest/v1/{endpoint_with_limit}",
+                headers=paginated_headers,
             )
-            if response.status_code not in (200, 206):
-                error_message = f"Database error: {response.status_code}"
-                print(
-                    "Error initializing Supabase paginated query for "
-                    f"{endpoint_with_limit}: {error_message}"
-                )
-                raise HTTPException(500, error_message)
-            chunk = response.json()
-            if not isinstance(chunk, list):
-                return chunk
-            if not chunk:
-                break
-            aggregated_results.extend(chunk)
-            range_start += len(chunk)
-            if len(chunk) < chunk_size:
+
+            # ✅ FIX: Handle both 200 (complete) and 206 (partial) and 416 (beyond range)
+            if response.status_code == 416:
+                # Requested range beyond available data - we're done
+                print(f"   Reached end of data at offset {range_start}")
                 break
 
+            if response.status_code not in (200, 206):
+                error_message = f"Database error: {response.status_code}"
+                print(f"Error paginating Supabase for {endpoint_with_limit}: {error_message}")
+                raise HTTPException(500, error_message)
+
+            chunk = response.json()
+
+            if not isinstance(chunk, list):
+                return chunk
+
+            if not chunk:
+                # Empty response - we're done
+                break
+
+            aggregated_results.extend(chunk)
+
+            # If we got fewer rows than requested, we've reached the end
+            if len(chunk) < chunk_size:
+                print(f"   Received {len(chunk)} rows (less than {chunk_size}) - end of data")
+                break
+
+            range_start += len(chunk)
+
+        print(f"   ✓ Retrieved {len(aggregated_results)} total records")
         return aggregated_results
 
 
