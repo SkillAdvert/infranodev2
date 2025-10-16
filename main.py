@@ -182,18 +182,61 @@ class FinancialModelResponse(BaseModel):
     message: str
 
 
-async def query_supabase(endpoint: str) -> Any:
+async def query_supabase(endpoint: str, *, limit: Optional[int] = None, page_size: int = 1000) -> Any:
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise HTTPException(500, "Supabase credentials not configured")
 
     headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+    if limit is not None and limit <= 0:
+        return []
+
+    def append_limit(query: str, limit_value: int) -> str:
+        separator = "&" if "?" in query else "?"
+        return f"{query}{separator}limit={limit_value}"
+
     async with httpx.AsyncClient(timeout=10.0) as client:
-        response = await client.get(f"{SUPABASE_URL}/rest/v1/{endpoint}", headers=headers)
-        if response.status_code == 200:
-            return response.json()
-        error_message = f"Database error: {response.status_code}"
-        print(f"Error initializing Supabase query for {endpoint}: {error_message}")
-        raise HTTPException(500, error_message)
+        if limit is None or limit <= page_size:
+            endpoint_with_limit = (
+                append_limit(endpoint, limit) if limit is not None else endpoint
+            )
+            response = await client.get(
+                f"{SUPABASE_URL}/rest/v1/{endpoint_with_limit}", headers=headers
+            )
+            if response.status_code == 200:
+                return response.json()
+            error_message = f"Database error: {response.status_code}"
+            print(f"Error initializing Supabase query for {endpoint_with_limit}: {error_message}")
+            raise HTTPException(500, error_message)
+
+        assert limit is not None
+        aggregated_results: List[Any] = []
+        range_start = 0
+        while range_start < limit:
+            chunk_size = min(page_size, limit - range_start)
+            paginated_headers = dict(headers)
+            paginated_headers["Range"] = f"{range_start}-{range_start + chunk_size - 1}"
+            endpoint_with_limit = append_limit(endpoint, chunk_size)
+            response = await client.get(
+                f"{SUPABASE_URL}/rest/v1/{endpoint_with_limit}", headers=paginated_headers
+            )
+            if response.status_code not in (200, 206):
+                error_message = f"Database error: {response.status_code}"
+                print(
+                    "Error initializing Supabase paginated query for "
+                    f"{endpoint_with_limit}: {error_message}"
+                )
+                raise HTTPException(500, error_message)
+            chunk = response.json()
+            if not isinstance(chunk, list):
+                return chunk
+            if not chunk:
+                break
+            aggregated_results.extend(chunk)
+            range_start += len(chunk)
+            if len(chunk) < chunk_size:
+                break
+
+        return aggregated_results
 
 
 @dataclass
@@ -295,7 +338,7 @@ class InfrastructureCache:
                 ) = await asyncio.gather(
                     query_supabase("substations?select=*"),
                     query_supabase("transmission_lines?select=*"),
-                    query_supabase("fiber_cables?select=*&limit=200"),
+                    query_supabase("fiber_cables?select=*", limit=200),
                     query_supabase("internet_exchange_points?select=*"),
                     query_supabase("water_resources?select=*"),
                 )
@@ -1681,7 +1724,7 @@ async def health() -> Dict[str, Any]:
 
 @app.get("/api/projects")
 async def get_projects(
-    limit: int = Query(1000),
+    limit: int = Query(5000),
     technology: Optional[str] = None,
     country: Optional[str] = None,
     persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring"),
@@ -1693,9 +1736,9 @@ async def get_projects(
     if country:
         filters.append(f"country.ilike.%{country}%")
     if filters:
-        query_parts.append("&".join(filters))
-    query_parts.append(f"limit={limit}")
-    projects = await query_supabase("&".join(query_parts))
+        query_parts.extend(filters)
+    endpoint = "&".join(query_parts)
+    projects = await query_supabase(endpoint, limit=limit)
 
     for project in projects:
         dummy_proximity = {
@@ -1729,7 +1772,7 @@ async def get_projects(
 async def get_geojson(
     persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring"),
 ) -> Dict[str, Any]:
-    projects = await query_supabase("renewable_projects?select=*&limit=500")
+    projects = await query_supabase("renewable_projects?select=*", limit=500)
     features: List[Dict[str, Any]] = []
 
     for project in projects:
@@ -1884,7 +1927,7 @@ async def score_user_sites(
 
 @app.get("/api/projects/enhanced")
 async def get_enhanced_geojson(
-    limit: int = Query(1000, description="Number of projects to process"),
+    limit: int = Query(5000, description="Number of projects to process"),
     persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring"),
     apply_capacity_filter: bool = Query(True, description="Filter projects by persona capacity requirements"),
     custom_weights: Optional[str] = Query(None, description="JSON string of custom weights (overrides persona)"),
@@ -1924,7 +1967,7 @@ async def get_enhanced_geojson(
     )
 
     try:
-        projects = await query_supabase(f"{source_table}?select=*&limit={limit}")
+        projects = await query_supabase(f"{source_table}?select=*", limit=limit)
         print(f"✅ Loaded {len(projects)} projects from {source_table}")
         if source_table != "renewable_projects":
             print(f"⚠️ Note: {source_table} table requested but using renewable_projects as placeholder")
@@ -2422,7 +2465,7 @@ async def compare_scoring_systems(
     limit: int = Query(10, description="Projects to compare"),
     persona: PersonaType = Query("hyperscaler", description="Persona for comparison"),
 ) -> Dict[str, Any]:
-    projects = await query_supabase(f"renewable_projects?select=*&limit={limit}")
+    projects = await query_supabase("renewable_projects?select=*", limit=limit)
     comparison: List[Dict[str, Any]] = []
     for project in projects:
         if not project.get("longitude") or not project.get("latitude"):
@@ -2482,7 +2525,7 @@ async def analyze_for_power_developer(
 ) -> Dict[str, Any]:
     source_table = "renewable_projects"
     print(f"🔄 Power Developer Analysis - Using {source_table} as placeholder for demand sites")
-    projects = await query_supabase(f"{source_table}?select=*&limit={limit}")
+    projects = await query_supabase(f"{source_table}?select=*", limit=limit)
 
     auto_calculated_values: Dict[str, Any] = {}
     if site_location and criteria:
@@ -2526,9 +2569,9 @@ async def analyze_for_power_developer(
 @app.get("/api/projects/customer-match")
 async def get_customer_match_projects(
     target_customer: PersonaType = Query("hyperscaler", description="Target customer persona"),
-    limit: int = Query(1000, description="Number of projects to analyze"),
+    limit: int = Query(5000, description="Number of projects to analyze"),
 ) -> Dict[str, Any]:
-    projects = await query_supabase(f"renewable_projects?select=*&limit={limit}")
+    projects = await query_supabase("renewable_projects?select=*", limit=limit)
     filtered_projects = filter_projects_by_persona_capacity(projects, target_customer)
 
     customer_analysis: List[Dict[str, Any]] = []
