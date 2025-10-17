@@ -98,14 +98,14 @@ PERSONA_WEIGHTS: Dict[str, Dict[str, float]] = {
 PERSONA_CAPACITY_RANGES = {
     "edge_computing": {"min": 0.4, "max": 5},
     "colocation": {"min": 5, "max": 50},
-    "hyperscaler": {"min": 50, "max": 1000},
+    "hyperscaler": {"min": 30, "max": 1000},
 }
 
 PERSONA_CAPACITY_PARAMS = {
     "edge_computing": {"min_mw": 0.4, "ideal_mw": 2.0, "max_mw": 5.0},
     "colocation": {"min_mw": 5.0, "ideal_mw": 20.0, "max_mw": 50.0},
-    "hyperscaler": {"min_mw": 50.0, "ideal_mw": 100.0, "max_mw": 400.0},
-    "default": {"min_mw": 50.0, "ideal_mw": 100.0, "max_mw": 400.0},
+    "hyperscaler": {"min_mw": 30.0, "ideal_mw": 100.0, "max_mw": 400.0},
+    "default": {"min_mw": 30.0, "ideal_mw": 100.0, "max_mw": 400.0},
 }
 
 LCOE_CONFIG = {
@@ -1993,7 +1993,7 @@ async def get_enhanced_geojson(
             projects = filter_projects_by_persona_capacity(projects, persona)
             print(f"🎯 Filtered to {len(projects)} projects for {persona} (was {original_count})")
         if persona:
-            dc_thresholds = {"hyperscaler": 50.0, "colocation": 5.0, "edge_computing": 1.0}
+            dc_thresholds = {"hyperscaler": 30.0, "colocation": 5.0, "edge_computing": 1.0}
             min_capacity = dc_thresholds.get(persona, 1.0)
             capacity_gated: List[Dict[str, Any]] = []
             for project in projects:
