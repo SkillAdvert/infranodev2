@@ -1069,36 +1069,70 @@ def calculate_capacity_component_score(capacity_mw: float, persona: Optional[str
 
 
 def calculate_development_stage_score(status: str, perspective: str = "demand") -> float:
-    status_str = str(status).lower()
-    normalized = status_str.replace("-", " ").replace("/", " ")
+    """
+    Score based on BTM (Behind-the-Meter) intervention timing and planning viability.
 
-    def has_any(substrings: Iterable[str]) -> bool:
-        return any(sub in normalized for sub in substrings)
+    Scoring philosophy:
+    - Peak scores (90-95): Active planning or reactivatable consents (optimal BTM timing)
+    - High scores (70-85): Consented or exempt sites (strong BTM potential)
+    - Mid scores (40-45): Early concept or awaiting construction (narrowing window)
+    - Low scores (0-35): Refused, withdrawn, or under construction (poor BTM fit)
 
-    if "operational" in normalized:
-        base_score = 20.0
-    elif has_any(("under construction", "construction")):
-        base_score = 75.0
-    elif has_any(("granted", "consented", "approved")):
-        base_score = 95.0
-    elif has_any(("fid_ready", "fid ready", "ready-to-build", "ready to build")) or (
-        "ready" in normalized and "already" not in normalized
-    ) or "shovel" in normalized:
-        base_score = 90.0
-    elif has_any(("submitted", "application")):
-        base_score = 70.0
-    elif has_any(("scoping", "eia")):
-        base_score = 55.0
-    elif has_any(("planning", "pre planning", "pre-planning")):
-        base_score = 40.0
-    elif "concept" in normalized:
-        base_score = 25.0
+    Args:
+        status: Development status from renewable_projects.development_status_short
+        perspective: 'demand' (data center) or 'supply' (power developer)
+
+    Returns:
+        Float score 0-100 based on BTM intervention suitability
+    """
+    status_str = str(status).lower().strip()
+
+    # BTM-optimized scoring spectrum (Set 2)
+    # Maps to renewable_projects.development_status_short column
+    STATUS_SCORES = {
+        "decommissioned": 0,                    # Asset dismantled — no potential
+        "abandoned": 5,                         # Project halted; non-recoverable
+        "appeal withdrawn": 10,                 # Appeal dropped — closed path
+        "appeal refused": 15,                   # Appeal denied — minimal viability
+        "under construction": 20,               # Build started; BTM window closed
+        "appeal lodged": 25,                    # Legal uncertainty; long timelines
+        "application refused": 30,              # Denied; redesign needed
+        "application withdrawn": 35,            # Paused; may re-enter
+        "awaiting construction": 40,            # Consented; BTM opportunity narrowing
+        "no application made": 45,              # Concept only; untested
+        "secretary of state granted": 70,       # Nationally endorsed; fixed design limits BTM
+        "planning expired": 80,                 # Previously consented; reactivatable — HIGH BTM
+        "no application required": 85,          # Permitted development — VERY STRONG BTM
+        "application submitted": 90,            # Live planning — OPTIMAL BTM timing
+        "revised": 95,                          # Resubmitted — TOP-TIER BTM suitability
+
+        # Legacy aliases for backward compatibility
+        "consented": 40,                        # Map to "awaiting construction" equivalent
+        "granted": 40,                          # Same as consented
+        "in planning": 45,                      # Map to "no application made" equivalent
+        "operational": 0,                       # Same as decommissioned (no BTM value)
+    }
+
+    # Try exact match first
+    if status_str in STATUS_SCORES:
+        base_score = STATUS_SCORES[status_str]
     else:
-        base_score = 30.0
+        # Fallback: partial string matching for database variants
+        # Example: "Planning Consent Granted" → matches "granted" → 40
+        base_score = 45.0  # Default to "concept" level for unknowns
 
+        for key, score in STATUS_SCORES.items():
+            if key in status_str:
+                base_score = score
+                break
+
+    # Perspective adjustment (optional)
     if perspective == "supply":
-        return max(20.0, base_score)
-    return base_score
+        # Power developers may value operational/construction sites differently
+        # Could add logic here if needed, but generally BTM scoring is demand-focused
+        pass
+
+    return float(base_score)
 
 
 def calculate_technology_score(tech_type: str) -> float:
