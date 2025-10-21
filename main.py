@@ -7,7 +7,7 @@ import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple, Union
 
 import httpx
 from dotenv import load_dotenv
@@ -3152,6 +3152,145 @@ async def calculate_financial_model(request: FinancialModelRequest) -> Financial
             status_code=500,
             detail={"success": False, "message": error_msg, "error_type": type(exc).__name__},
         )
+
+
+# ============================================================================
+# TEC CONNECTIONS ENDPOINT
+# ============================================================================
+
+
+class TecConnectionProperties(BaseModel):
+    id: Union[int, str]
+    project_name: str
+    customer_name: Optional[str] = None
+    mw_delta: Optional[float] = None
+    plant_type: Optional[str] = None
+    project_status: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    connection_site: Optional[str] = None
+    substation_name: Optional[str] = None
+    voltage: Optional[float] = None
+    constraint_status: Optional[str] = None
+    created_at: Optional[str] = None
+    agreement_type: Optional[str] = None
+    effective_from: Optional[str] = None
+
+
+class TecConnectionGeometry(BaseModel):
+    type: str = "Point"
+    coordinates: List[float]
+
+
+class TecConnectionFeature(BaseModel):
+    type: str = "Feature"
+    geometry: TecConnectionGeometry
+    properties: TecConnectionProperties
+    id: Optional[str] = None
+
+
+class TecConnectionsResponse(BaseModel):
+    type: str = "FeatureCollection"
+    features: List[TecConnectionFeature]
+    count: int
+
+
+def transform_tec_row_to_feature(row: Dict[str, Any]) -> Optional[TecConnectionFeature]:
+    """Transform a Supabase TEC row into a GeoJSON feature."""
+
+    try:
+        lat_raw = row.get("latitude")
+        lon_raw = row.get("longitude")
+
+        lat = float(lat_raw) if lat_raw not in (None, "") else None
+        lon = float(lon_raw) if lon_raw not in (None, "") else None
+
+        if lat is None or lon is None:
+            print(f"⚠️ Skip TEC '{row.get('project_name')}' - no coords")
+            return None
+
+        capacity_raw = row.get("capacity_mw")
+        voltage_raw = row.get("voltage")
+
+        return TecConnectionFeature(
+            id=str(row.get("id")),
+            geometry=TecConnectionGeometry(coordinates=[lon, lat]),
+            properties=TecConnectionProperties(
+                id=row.get("id"),
+                project_name=row.get("project_name") or "Untitled",
+                customer_name=row.get("operator"),
+                mw_delta=float(capacity_raw) if capacity_raw not in (None, "") else None,
+                plant_type=row.get("technology_type"),
+                project_status=row.get("development_status"),
+                latitude=lat,
+                longitude=lon,
+                connection_site=row.get("connection_site"),
+                substation_name=row.get("substation_name"),
+                voltage=float(voltage_raw) if voltage_raw not in (None, "") else None,
+                constraint_status=row.get("constraint_status"),
+                created_at=row.get("created_at"),
+            ),
+        )
+    except Exception as exc:  # pragma: no cover - diagnostic logging only
+        print(f"❌ Transform error row {row.get('id')}: {exc}")
+        return None
+
+
+@app.get("/api/tec/connections", response_model=TecConnectionsResponse)
+async def get_tec_connections(
+    limit: int = Query(1000, ge=1, le=2000),
+    search: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    plant_type: Optional[str] = Query(None),
+):
+    """Return TEC connections as a GeoJSON FeatureCollection."""
+
+    try:
+        query = "tec_connections?select=*"
+        filters: List[str] = []
+
+        if search:
+            filters.append(f"project_name.ilike.%{search}%")
+        if status:
+            filters.append(f"development_status.ilike.%{status}%")
+        if plant_type:
+            filters.append(f"technology_type.ilike.%{plant_type}%")
+
+        if filters:
+            query = f"{query}&{'&'.join(filters)}"
+
+        print(f"🔄 TEC query: limit={limit}, filters={len(filters)}")
+        rows = await query_supabase(query, limit=limit)
+
+        if rows is None:
+            rows = []
+        elif not isinstance(rows, list):
+            rows = [rows]
+
+        features: List[TecConnectionFeature] = []
+        skipped_rows = 0
+
+        for row in rows:
+            feature = transform_tec_row_to_feature(row)
+            if feature is None:
+                skipped_rows += 1
+                continue
+            features.append(feature)
+
+        if skipped_rows:
+            print(f"⚠️ Skipped {skipped_rows} rows (missing coords)")
+
+        print(f"✅ Returning {len(features)} TEC features")
+        return TecConnectionsResponse(
+            type="FeatureCollection",
+            features=features,
+            count=len(features),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"❌ TEC endpoint error: {exc}")
+        raise HTTPException(500, f"Failed to fetch TEC connections: {exc}")
 
 
 if __name__ == "__main__":
