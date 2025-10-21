@@ -2645,22 +2645,50 @@ async def get_substations() -> Dict[str, Any]:
     stations = await query_supabase("substations?select=*")
     features: List[Dict[str, Any]] = []
     for station in stations or []:
-        lat = station.get("Lat") or station.get("latitude")
-        lon = station.get("Long") or station.get("longitude")
+        lat = _coerce_float(
+            station.get("latitude")
+            or station.get("lat")
+            or station.get("Lat")
+        )
+        lon = _coerce_float(
+            station.get("longitude")
+            or station.get("lon")
+            or station.get("Long")
+        )
         if lat is None or lon is None:
             continue
+        name = (
+            station.get("substation_name")
+            or station.get("name")
+            or station.get("SUBST_NAME")
+        )
+        operator = station.get("operator") or station.get("COMPANY")
+        voltage = _coerce_float(
+            station.get("primary_voltage_kv")
+            or station.get("voltage_kv")
+            or station.get("VOLTAGE_HIGH")
+        )
+        capacity_mva = _coerce_float(station.get("capacity_mva"))
+        constraint_status = station.get("constraint_status") or station.get(
+            "CONSTRAINT STATUS"
+        )
+
+        properties: Dict[str, Any] = {
+            "name": name,
+            "substation_name": name,
+            "operator": operator,
+            "primary_voltage_kv": voltage,
+            "voltage_kv": voltage,
+            "capacity_mva": capacity_mva,
+            "type": "substation",
+        }
+        if constraint_status is not None:
+            properties["constraint_status"] = constraint_status
         features.append(
             {
                 "type": "Feature",
                 "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                "properties": {
-                    "name": station.get("SUBST_NAME"),
-                    "operator": station.get("COMPANY"),
-                    "voltage_kv": station.get("VOLTAGE_HIGH"),
-                    "capacity_mva": station.get("capacity_mva"),
-                    "constraint_status": station.get("CONSTRAINT STATUS"),
-                    "type": "substation",
-                },
+                "properties": properties,
             }
         )
     return {"type": "FeatureCollection", "features": features}
@@ -3162,8 +3190,11 @@ async def calculate_financial_model(request: FinancialModelRequest) -> Financial
 class TecConnectionProperties(BaseModel):
     id: Union[int, str]
     project_name: str
+    operator: Optional[str] = None
     customer_name: Optional[str] = None
+    capacity_mw: Optional[float] = None
     mw_delta: Optional[float] = None
+    technology_type: Optional[str] = None
     plant_type: Optional[str] = None
     project_status: Optional[str] = None
     latitude: Optional[float] = None
@@ -3199,18 +3230,18 @@ def transform_tec_row_to_feature(row: Dict[str, Any]) -> Optional[TecConnectionF
     """Transform a Supabase TEC row into a GeoJSON feature."""
 
     try:
-        lat_raw = row.get("latitude")
-        lon_raw = row.get("longitude")
-
-        lat = float(lat_raw) if lat_raw not in (None, "") else None
-        lon = float(lon_raw) if lon_raw not in (None, "") else None
+        lat = _coerce_float(row.get("latitude"))
+        lon = _coerce_float(row.get("longitude"))
 
         if lat is None or lon is None:
             print(f"⚠️ Skip TEC '{row.get('project_name')}' - no coords")
             return None
 
-        capacity_raw = row.get("capacity_mw")
-        voltage_raw = row.get("voltage")
+        capacity_mw = _coerce_float(row.get("capacity_mw"))
+        voltage = _coerce_float(row.get("voltage"))
+        technology_type = row.get("technology_type")
+        operator = row.get("operator") or row.get("customer_name")
+        customer_name = row.get("customer_name") or row.get("operator")
 
         return TecConnectionFeature(
             id=str(row.get("id")),
@@ -3218,15 +3249,18 @@ def transform_tec_row_to_feature(row: Dict[str, Any]) -> Optional[TecConnectionF
             properties=TecConnectionProperties(
                 id=row.get("id"),
                 project_name=row.get("project_name") or "Untitled",
-                customer_name=row.get("operator"),
-                mw_delta=float(capacity_raw) if capacity_raw not in (None, "") else None,
-                plant_type=row.get("technology_type"),
+                operator=operator,
+                customer_name=customer_name,
+                capacity_mw=capacity_mw,
+                mw_delta=capacity_mw,
+                technology_type=technology_type,
+                plant_type=technology_type,
                 project_status=row.get("development_status"),
                 latitude=lat,
                 longitude=lon,
                 connection_site=row.get("connection_site"),
                 substation_name=row.get("substation_name"),
-                voltage=float(voltage_raw) if voltage_raw not in (None, "") else None,
+                voltage=voltage,
                 constraint_status=row.get("constraint_status"),
                 created_at=row.get("created_at"),
             ),
