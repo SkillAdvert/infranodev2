@@ -3238,7 +3238,7 @@ def transform_tec_row_to_feature(row: Dict[str, Any]) -> Optional[TecConnectionF
 
 @app.get("/api/tec/connections", response_model=TecConnectionsResponse)
 async def get_tec_connections(
-    limit: int = Query(1000, ge=1, le=2000),
+    limit: int = Query(1000, ge=1, le=5000),
     search: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     plant_type: Optional[str] = Query(None),
@@ -3297,6 +3297,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
