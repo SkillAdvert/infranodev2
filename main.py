@@ -2835,6 +2835,45 @@ async def get_water_resources() -> Dict[str, Any]:
     return {"type": "FeatureCollection", "features": features}
 
 
+@app.get("/api/infrastructure/dno-areas")
+async def get_dno_license_areas() -> Dict[str, Any]:
+    """Return DNO license areas as GeoJSON FeatureCollection."""
+
+    try:
+        print("🔄 Fetching DNO license areas from database...")
+
+        areas = await query_supabase("dno_license_areas?select=*")
+
+        features: List[Dict[str, Any]] = []
+
+        for area in areas or []:
+            geometry = area.get("geometry")
+
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": geometry,
+                    "properties": {
+                        "id": area.get("id"),
+                        "name": area.get("dno_name"),
+                        "dno_name": area.get("dno_name"),
+                        "license_area": area.get("license_area"),
+                        "company": area.get("company"),
+                        "region": area.get("region"),
+                        "type": "dno_area",
+                    },
+                }
+            )
+
+        print(f"✅ Returning {len(features)} DNO license areas")
+
+        return {"type": "FeatureCollection", "features": features}
+
+    except Exception as exc:  # pragma: no cover - runtime safeguard
+        print(f"❌ DNO areas endpoint error: {exc}")
+        raise HTTPException(500, f"Failed to fetch DNO license areas: {exc}")
+
+
 @app.get("/api/projects/compare-scoring")
 async def compare_scoring_systems(
     limit: int = Query(10, description="Projects to compare"),
