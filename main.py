@@ -2569,6 +2569,45 @@ async def get_enhanced_geojson(
     except Exception as exc:  # pragma: no cover - defensive guard
         print(f"⚠️ TNUoS enrichment skipped: {exc}")
 
+    def _coerce_rating(value: Any) -> Optional[float]:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    top_projects = [
+        feature
+        for feature in features
+        if isinstance(feature, dict)
+        and isinstance(feature.get("properties"), dict)
+        and feature["properties"].get("investment_rating") is not None
+    ]
+    top_projects.sort(
+        key=lambda feature: _coerce_rating(feature["properties"].get("investment_rating"))
+        or -math.inf,
+        reverse=True,
+    )
+
+    if top_projects:
+        print("🏆 Top 5 projects by investment rating:")
+        for index, feature in enumerate(top_projects[:5], start=1):
+            properties = feature.get("properties", {})
+            rating_value = _coerce_rating(properties.get("investment_rating"))
+            rating_display = f"{rating_value:.2f}" if rating_value is not None else "n/a"
+            capacity_value = properties.get("capacity_mw")
+            if isinstance(capacity_value, (int, float)):
+                capacity_display = f"{capacity_value:.1f}MW"
+            elif capacity_value:
+                capacity_display = str(capacity_value)
+            else:
+                capacity_display = "n/a"
+            status_display = properties.get("development_status_short") or properties.get("rating_description") or "Unknown status"
+            tech_display = properties.get("technology_type") or "Unknown tech"
+            name_display = properties.get("site_name") or properties.get("ref_id") or "Unknown site"
+            print(
+                f"  {index}. {name_display} ({tech_display}) — rating {rating_display} • {capacity_display} • {status_display}"
+            )
+
     processing_time = time.time() - start_time
     if persona:
         print(
