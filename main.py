@@ -97,15 +97,15 @@ PERSONA_WEIGHTS: Dict[str, Dict[str, float]] = {
 
 PERSONA_CAPACITY_RANGES = {
     "edge_computing": {"min": 0.4, "max": 5},
-    "colocation": {"min": 5, "max": 50},
+    "colocation": {"min": 5, "max": 30},
     "hyperscaler": {"min": 30, "max": 1000},
 }
 
 PERSONA_CAPACITY_PARAMS = {
     "edge_computing": {"min_mw": 0.4, "ideal_mw": 2.0, "max_mw": 5.0},
-    "colocation": {"min_mw": 5.0, "ideal_mw": 20.0, "max_mw": 50.0},
-    "hyperscaler": {"min_mw": 30.0, "ideal_mw": 100.0, "max_mw": 400.0},
-    "default": {"min_mw": 30.0, "ideal_mw": 100.0, "max_mw": 400.0},
+    "colocation": {"min_mw": 5.0, "ideal_mw": 15.0, "max_mw": 30.0},
+    "hyperscaler": {"min_mw": 30.0, "ideal_mw": 75.0, "max_mw": 200.0},
+    "default": {"min_mw": 5.0, "ideal_mw": 50.0, "max_mw": 100.0},
 }
 
 # ============================================================================
@@ -855,11 +855,11 @@ def _prepare_water_feature(raw_geometry: Any, payload: Dict[str, Any]) -> Option
 
 
 INFRASTRUCTURE_SEARCH_RADIUS_KM = {
-    "substation": 150.0,
-    "transmission": 150.0,
-    "fiber": 150.0,
-    "ixp": 150.0,
-    "water": 150.0,
+    "substation": 100.0,
+    "transmission": 100.0,
+    "fiber": 100.0,
+    "ixp": 100.0,
+    "water": 100.0,
 }
 
 
@@ -1062,7 +1062,7 @@ def calculate_capacity_component_score(capacity_mw: float, persona: Optional[str
     if persona_key == "custom":
         persona_key = "default"
     params = PERSONA_CAPACITY_PARAMS.get(persona_key, PERSONA_CAPACITY_PARAMS["default"])
-    ideal = params.get("ideal_mw", 100.0)
+    ideal = params.get("ideal_mw", 75.0)
     logistic_argument = capacity_mw - ideal
     score = 100.0 / (1.0 + math.exp(-0.05 * logistic_argument))
     return max(0.0, min(100.0, float(score)))
@@ -1100,17 +1100,17 @@ def calculate_development_stage_score(status: str, perspective: str = "demand") 
         "application withdrawn": 35,            # Paused; may re-enter
         "awaiting construction": 40,            # Consented; BTM opportunity narrowing
         "no application made": 45,              # Concept only; untested
-        "secretary of state granted": 70,       # Nationally endorsed; fixed design limits BTM
-        "planning expired": 80,                 # Previously consented; reactivatable — HIGH BTM
-        "no application required": 85,          # Permitted development — VERY STRONG BTM
-        "application submitted": 90,            # Live planning — OPTIMAL BTM timing
-        "revised": 95,                          # Resubmitted — TOP-TIER BTM suitability
+        "secretary of state granted": 80,       # Nationally endorsed; fixed design limits BTM
+        "planning expired": 70,                 # Previously consented; reactivatable — HIGH BTM
+        "no application required": 100,          # Permitted development — VERY STRONG BTM
+        "application submitted": 100,            # Live planning — OPTIMAL BTM timing
+        "revised": 90,                          # Resubmitted — TOP-TIER BTM suitability
 
         # Legacy aliases for backward compatibility
-        "consented": 40,                        # Map to "awaiting construction" equivalent
-        "granted": 40,                          # Same as consented
-        "in planning": 45,                      # Map to "no application made" equivalent
-        "operational": 0,                       # Same as decommissioned (no BTM value)
+        "consented": 70,                        # Map to "awaiting construction" equivalent
+        "granted": 70,                          # Same as consented
+        "in planning": 55,                      # Map to "no application made" equivalent
+        "operational": 10,                       # Same as decommissioned (no BTM value)
     }
 
     # Try exact match first
@@ -1142,11 +1142,11 @@ def calculate_technology_score(tech_type: str) -> float:
     if "battery" in tech:
         return 80.0
     if "wind" in tech:
-        return 80.0
+        return 60.0
     if "hybrid" in tech:
-        return 95.0
+        return 100.0
     if "CCGT" in tech:
-        return 100
+        return 100.0
     return 80.0
 
 
@@ -1251,13 +1251,13 @@ def estimate_capacity_factor(
     if "battery" in tech or "bess" in tech:
         return 20.0
     if "hydro" in tech:
-        return 35.0
+        return 50.0
     if "gas" in tech or "ccgt" in tech:
-        return 55.0
+        return 70.0
     if "biomass" in tech:
         return 70.0
     if "hybrid" in tech:
-        return 15.5
+        return 50
     return 30.0
 
 
@@ -1345,15 +1345,15 @@ def calculate_resilience_score(
 
     # Transmission line access (<40km)
     transmission_km = distances.get("transmission_km", 999)
-    if transmission_km < 40:
-        backup_count += 1
+    if transmission_km < 30:
+        backup_count += 2
 
     # Technology bonus: Battery storage = onsite firming
     tech_type = str(project.get("technology_type", "")).lower()
     if "battery" in tech_type or "bess" in tech_type:
         backup_count += 1  # Significant resilience boost
     elif "hybrid" in tech_type:
-        backup_count += 2  # Some onsite storage
+        backup_count += 3  # Some onsite storage
 
     # Convert count to score (0-10 options mapped to 0-100)
     # Max realistic = 10 options (2+1+2+1+1+2+1 with battery)
@@ -1400,11 +1400,11 @@ def calculate_price_sensitivity_score(
 
     if "solar" in tech_type:
         base_lcoe = 52.0  # Solar LCOE in UK
-        reference_cf = 0.11
+        reference_cf = 0.12
     elif "wind" in tech_type:
         if "offshore" in tech_type:
             base_lcoe = 80.0  # Offshore wind
-            reference_cf = 0.45
+            reference_cf = 0.40
         else:
             base_lcoe = 60.0  # Onshore wind
             reference_cf = 0.30
@@ -1756,15 +1756,15 @@ def calculate_base_investment_score_renewable(project: Dict[str, Any]) -> float:
     status = str(project.get("development_status_short", "")).lower()
     tech = str(project.get("technology_type", "")).lower()
     if capacity >= 200:
-        capacity_score = 50.0
+        capacity_score = 30.0
     elif capacity >= 100:
-        capacity_score = 90.0
+        capacity_score = 80.0
     elif capacity >= 50:
-        capacity_score = 75.0
+        capacity_score = 70.0
     elif capacity >= 25:
-        capacity_score = 60.0
+        capacity_score = 90.0
     elif capacity >= 10:
-        capacity_score = 45.0
+        capacity_score = 60.0
     elif capacity >= 5:
         capacity_score = 30.0
     else:
@@ -1773,17 +1773,17 @@ def calculate_base_investment_score_renewable(project: Dict[str, Any]) -> float:
     if "operational" in status:
         stage_score = 10.0
     elif "construction" in status:
-        stage_score = 90.0
+        stage_score = 60.0
     elif "granted" in status:
-        stage_score = 75.0
+        stage_score = 90.0
     elif "submitted" in status:
-        stage_score = 50.0
+        stage_score = 80.0
     elif "planning" in status:
-        stage_score = 30.0
+        stage_score = 70.0
     elif "pre-planning" in status:
-        stage_score = 20.0
+        stage_score = 60.0
     else:
-        stage_score = 10.0
+        stage_score = 50.0
 
     if "solar" in tech:
         tech_score = 80.0
@@ -3409,6 +3409,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
