@@ -11,7 +11,7 @@ from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -3054,7 +3054,7 @@ def transform_tec_to_project_schema(tec_row: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.post("/api/projects/power-developer-analysis")
 async def analyze_for_power_developer(
-    criteria: Dict[str, Any],
+    criteria: Dict[str, Any] = Body(default_factory=dict),
     site_location: Optional[Dict[str, float]] = None,
     target_persona: str = Query("greenfield", description="greenfield, repower, or stranded"),
     limit: int = Query(150),
