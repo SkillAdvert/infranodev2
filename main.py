@@ -3020,6 +3020,58 @@ async def compare_scoring_systems(
 # TEC CONNECTIONS TRANSFORMATION
 # ============================================================================
 
+def _extract_coordinates(row: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+    """Return latitude/longitude from heterogeneous Supabase payloads."""
+
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
+    latitude_keys = [
+        "latitude",
+        "lat",
+        "Latitude",
+        "Latitude_deg",
+    ]
+    longitude_keys = [
+        "longitude",
+        "lon",
+        "lng",
+        "Longitude",
+        "Longitude_deg",
+    ]
+
+    for key in latitude_keys:
+        if key in row:
+            latitude = _coerce_float(row.get(key))
+            if latitude is not None:
+                break
+
+    for key in longitude_keys:
+        if key in row:
+            longitude = _coerce_float(row.get(key))
+            if longitude is not None:
+                break
+
+    if (latitude is None or longitude is None) and isinstance(row.get("location"), dict):
+        location_data = row.get("location")
+        latitude = latitude or _coerce_float(
+            location_data.get("lat") or location_data.get("latitude")
+        )
+        longitude = longitude or _coerce_float(
+            location_data.get("lon")
+            or location_data.get("lng")
+            or location_data.get("longitude")
+        )
+
+    if (latitude is None or longitude is None) and isinstance(row.get("coordinates"), (list, tuple)):
+        coords = row.get("coordinates")
+        if len(coords) >= 2:
+            longitude = longitude or _coerce_float(coords[0])
+            latitude = latitude or _coerce_float(coords[1])
+
+    return latitude, longitude
+
+
 def transform_tec_to_project_schema(tec_row: Dict[str, Any]) -> Dict[str, Any]:
     """
     Transform a TEC connections database row to unified project schema.
@@ -3029,6 +3081,8 @@ def transform_tec_to_project_schema(tec_row: Dict[str, Any]) -> Dict[str, Any]:
     - development_status → development_status_short
     - Coordinates might be NULL (we'll handle that separately)
     """
+
+    latitude, longitude = _extract_coordinates(tec_row)
 
     return {
         "id": tec_row.get("id"),
@@ -3043,8 +3097,8 @@ def transform_tec_to_project_schema(tec_row: Dict[str, Any]) -> Dict[str, Any]:
         "connection_site": tec_row.get("connection_site"),
         "substation_name": tec_row.get("substation_name"),
         "voltage_kv": _coerce_float(tec_row.get("voltage")),
-        "latitude": _coerce_float(tec_row.get("latitude")),
-        "longitude": _coerce_float(tec_row.get("longitude")),
+        "latitude": latitude,
+        "longitude": longitude,
         "county": None,
         "country": "UK",
         "operator": tec_row.get("operator") or tec_row.get("customer_name"),
@@ -3575,8 +3629,7 @@ def transform_tec_row_to_feature(row: Dict[str, Any]) -> Optional[TecConnectionF
     """Transform a Supabase TEC row into a GeoJSON feature."""
 
     try:
-        lat = _coerce_float(row.get("latitude"))
-        lon = _coerce_float(row.get("longitude"))
+        lat, lon = _extract_coordinates(row)
 
         if lat is None or lon is None:
             print(f"⚠️ Skip TEC '{row.get('project_name')}' - no coords")
