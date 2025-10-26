@@ -3133,10 +3133,9 @@ def transform_tec_to_project_schema(tec_row: Dict[str, Any]) -> Dict[str, Any]:
 
 @app.post("/api/projects/power-developer-analysis")
 async def analyze_for_power_developer(
-    criteria: Dict[str, Any] = Body(default_factory=dict),
-    site_location: Optional[Dict[str, float]] = None,
-    target_persona: Optional[str] = Query(
-        None, description="greenfield, repower, or stranded"
+    request_body: Dict[str, Any] = Body(default_factory=dict),
+    target_persona_query: Optional[str] = Query(
+        None, alias="target_persona", description="greenfield, repower, or stranded"
     ),
     limit: int = Query(5000),
     source_table: str = Query(
@@ -3155,10 +3154,12 @@ async def analyze_for_power_developer(
     6. Return scored GeoJSON
 
     Args:
-        criteria: Not used (legacy parameter, kept for compatibility)
-        site_location: Not used (legacy parameter)
-        target_persona: Project type - "greenfield", "repower", or "stranded"
-        limit: Max projects to return (default 150)
+        request_body: Request body containing:
+            - target_persona: Project type - "greenfield", "repower", or "stranded"
+            - criteria: Not used (legacy parameter, kept for compatibility)
+            - site_location: Not used (legacy parameter)
+        target_persona_query: Query param alternative for target_persona (for backward compatibility)
+        limit: Max projects to return (default 5000)
         source_table: Data source - "tec_connections" (new) or "renewable_projects" (fallback)
 
     Returns:
@@ -3168,10 +3169,13 @@ async def analyze_for_power_developer(
     start_time = time.time()
 
     # ========================================================================
-    # STEP 0: Validate Input
+    # STEP 0: Extract and Validate Input
     # ========================================================================
+    # Support target_persona from both request body (preferred) and query parameter (backward compatibility)
+    target_persona_raw = request_body.get("target_persona") or target_persona_query
+
     target_persona, requested_persona, persona_resolution = resolve_power_developer_persona(
-        target_persona
+        target_persona_raw
     )
 
     if persona_resolution == "defaulted":
