@@ -2360,8 +2360,6 @@ async def get_enhanced_geojson(
     try:
         projects = await query_supabase(f"{source_table}?select=*", limit=limit)
         print(f"✅ Loaded {len(projects)} projects from {source_table}")
-        if source_table != "renewable_projects":
-            print(f"⚠️ Note: {source_table} table requested but using renewable_projects as placeholder")
         if persona and apply_capacity_filter:
             original_count = len(projects)
             projects = filter_projects_by_persona_capacity(projects, persona)
@@ -2552,9 +2550,9 @@ async def get_enhanced_geojson(
 
             # Build feature properties
             properties: Dict[str, Any] = {
-                "ref_id": project["ref_id"],
-                "site_name": project["site_name"],
-                "technology_type": project["technology_type"],
+                "ref_id": project.get("ref_id") or project.get("id"),
+                "site_name": project.get("site_name") or project.get("project_name"),
+                "technology_type": project.get("technology_type"),
                 "operator": project.get("operator"),
                 "capacity_mw": project.get("capacity_mw"),
                 "development_status_short": project.get("development_status_short"),
@@ -2598,10 +2596,10 @@ async def get_enhanced_geojson(
                         "coordinates": [project["longitude"], project["latitude"]],
                     },
                     "properties": {
-                        "ref_id": project["ref_id"],
-                        "site_name": project["site_name"],
+                        "ref_id": project.get("ref_id") or project.get("id"),
+                        "site_name": project.get("site_name") or project.get("project_name"),
                         "operator": project.get("operator"),
-                        "technology_type": project["technology_type"],
+                        "technology_type": project.get("technology_type"),
                         "capacity_mw": project.get("capacity_mw"),
                         "county": project.get("county"),
                         "country": project.get("country"),
