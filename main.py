@@ -139,9 +139,9 @@ POWER_DEVELOPER_PERSONAS: Dict[str, Dict[str, float]] = {
 }
 
 POWER_DEVELOPER_CAPACITY_RANGES = {
-    "greenfield": {"min": 10, "max": 500},
-    "repower": {"min": 5, "max": 500},
-    "stranded": {"min": 1, "max": 500},
+    "greenfield": {"min": 1, "max": 1000},
+    "repower": {"min": 1, "max": 1000},
+    "stranded": {"min": 1, "max": 1000},
 }
 
 # Validate weights sum to 1.0
@@ -3111,7 +3111,7 @@ async def analyze_for_power_developer(
     criteria: Dict[str, Any] = Body(default_factory=dict),
     site_location: Optional[Dict[str, float]] = None,
     target_persona: str = Query("greenfield", description="greenfield, repower, or stranded"),
-    limit: int = Query(150),
+    limit: int = Query(5000),
     source_table: str = Query(
         "tec_connections", description="Source table: tec_connections or renewable_projects"
     ),
@@ -3729,6 +3729,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
