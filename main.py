@@ -7,7 +7,7 @@ import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple, Union, cast
 
 import httpx
 from dotenv import load_dotenv
@@ -59,6 +59,7 @@ print(f"✅ SUPABASE_URL: {SUPABASE_URL}")
 print(f"✅ SUPABASE_KEY exists: {bool(SUPABASE_KEY)}")
 
 PersonaType = Literal["hyperscaler", "colocation", "edge_computing"]
+PowerDeveloperPersona = Literal["greenfield", "repower", "stranded"]
 
 KM_PER_DEGREE_LAT = 111.32
 INFRASTRUCTURE_CACHE_TTL_SECONDS = int(os.getenv("INFRA_CACHE_TTL", "600"))
@@ -143,6 +144,30 @@ POWER_DEVELOPER_CAPACITY_RANGES = {
     "repower": {"min": 1, "max": 1000},
     "stranded": {"min": 1, "max": 1000},
 }
+
+
+def resolve_power_developer_persona(
+    raw_value: Optional[str],
+) -> Tuple[PowerDeveloperPersona, str, str]:
+    """Normalize the requested persona and flag how it was resolved.
+
+    Returns a tuple of:
+        (effective_persona, requested_value, resolution_status)
+
+    Where ``resolution_status`` is one of ``"defaulted"`` (no value supplied),
+    ``"invalid"`` (value supplied but not recognized), or ``"valid"``.
+    """
+
+    requested_value = (raw_value or "").strip()
+    normalized_value = requested_value.lower()
+
+    if not normalized_value:
+        return "greenfield", requested_value, "defaulted"
+
+    if normalized_value not in POWER_DEVELOPER_PERSONAS:
+        return "greenfield", requested_value, "invalid"
+
+    return cast(PowerDeveloperPersona, normalized_value), requested_value, "valid"
 
 # Validate weights sum to 1.0
 for persona_name, weights_dict in POWER_DEVELOPER_PERSONAS.items():
@@ -3110,7 +3135,9 @@ def transform_tec_to_project_schema(tec_row: Dict[str, Any]) -> Dict[str, Any]:
 async def analyze_for_power_developer(
     criteria: Dict[str, Any] = Body(default_factory=dict),
     site_location: Optional[Dict[str, float]] = None,
-    target_persona: str = Query("greenfield", description="greenfield, repower, or stranded"),
+    target_persona: Optional[str] = Query(
+        None, description="greenfield, repower, or stranded"
+    ),
     limit: int = Query(5000),
     source_table: str = Query(
         "tec_connections", description="Source table: tec_connections or renewable_projects"
@@ -3143,11 +3170,27 @@ async def analyze_for_power_developer(
     # ========================================================================
     # STEP 0: Validate Input
     # ========================================================================
-    print(f"🔄 Power Developer Analysis - Project Type: {target_persona}")
+    target_persona, requested_persona, persona_resolution = resolve_power_developer_persona(
+        target_persona
+    )
 
-    if target_persona not in POWER_DEVELOPER_PERSONAS:
-        print(f"   ⚠️ Invalid project type '{target_persona}', using 'greenfield'")
-        target_persona = "greenfield"
+    if persona_resolution == "defaulted":
+        print("🔄 Power Developer Analysis - Project Type requested: <default>")
+        print("   ℹ️ No project type supplied, defaulting to 'greenfield'")
+    elif persona_resolution == "invalid":
+        print(
+            "🔄 Power Developer Analysis - Project Type requested: "
+            f"{requested_persona}"
+        )
+        print(
+            f"   ⚠️ Invalid project type '{requested_persona}', using 'greenfield'"
+        )
+    else:
+        print(
+            "🔄 Power Developer Analysis - Project Type requested: "
+            f"{requested_persona}"
+        )
+        print(f"   🎯 Using project type '{target_persona}'")
 
     weights = POWER_DEVELOPER_PERSONAS[target_persona]
 
@@ -3163,7 +3206,12 @@ async def analyze_for_power_developer(
             return {
                 "type": "FeatureCollection",
                 "features": [],
-                "metadata": {"error": "No projects found", "project_type": target_persona},
+                "metadata": {
+                    "error": "No projects found",
+                    "project_type": target_persona,
+                    "project_type_resolution": persona_resolution,
+                    "requested_project_type": requested_persona or None,
+                },
             }
         print(f"   ✅ Loaded {len(raw_rows)} projects")
     except Exception as exc:
@@ -3194,7 +3242,12 @@ async def analyze_for_power_developer(
         return {
             "type": "FeatureCollection",
             "features": [],
-            "metadata": {"warning": "No valid coordinates", "project_type": target_persona},
+            "metadata": {
+                "warning": "No valid coordinates",
+                "project_type": target_persona,
+                "project_type_resolution": persona_resolution,
+                "requested_project_type": requested_persona or None,
+            },
         }
 
     # ========================================================================
@@ -3323,6 +3376,8 @@ async def analyze_for_power_developer(
             "scoring_system": "Power Developer - Project Type Analysis",
             "project_type": target_persona,
             "project_type_weights": weights,
+            "requested_project_type": requested_persona or None,
+            "project_type_resolution": persona_resolution,
             "source_table": source_table,
             "total_projects_processed": len(raw_rows),
             "projects_with_valid_coords": len(valid_projects),
