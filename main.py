@@ -1606,6 +1606,7 @@ def calculate_persona_weighted_score(
     persona: PersonaType = "hyperscaler",
     perspective: str = "demand",
     user_max_price_mwh: Optional[float] = None,  # NEW parameter
+    custom_weights: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     """
     Calculate persona-based weighted score using 7 business criteria.
@@ -1613,7 +1614,7 @@ def calculate_persona_weighted_score(
     Args:
         user_max_price_mwh: User's maximum acceptable price (£/MWh)
     """
-    weights = PERSONA_WEIGHTS[persona]
+    weights = custom_weights or PERSONA_WEIGHTS[persona]
 
     # Get 7 component scores
     component_scores = build_persona_component_scores(
@@ -2339,19 +2340,42 @@ async def get_enhanced_geojson(
     ),
 ) -> Dict[str, Any]:
     start_time = time.time()
-    parsed_custom_weights = None
+    print(f"Received custom_weights: {custom_weights}")
+    print(f"Received persona: {persona}")
+    parsed_custom_weights: Optional[Dict[str, float]] = None
+    persona_custom_weights: Optional[Dict[str, float]] = None
     if custom_weights:
         try:
             parsed_custom_weights = json.loads(custom_weights)
+            print(f"Parsed weights keys: {parsed_custom_weights.keys()}")
+            print(f"Parsed weights values: {parsed_custom_weights}")
             total = sum(parsed_custom_weights.values())
             if total and abs(total - 1.0) > 0.01:
                 parsed_custom_weights = {key: value / total for key, value in parsed_custom_weights.items()}
-        except (json.JSONDecodeError, AttributeError):
+            persona_weight_keys = {
+                "capacity",
+                "connection_speed",
+                "resilience",
+                "land_planning",
+                "latency",
+                "cooling",
+                "price_sensitivity",
+            }
+            if parsed_custom_weights and all(key in parsed_custom_weights for key in persona_weight_keys):
+                persona_custom_weights = {key: parsed_custom_weights[key] for key in persona_weight_keys}
+        except (json.JSONDecodeError, AttributeError) as exc:
             parsed_custom_weights = None
+            persona_custom_weights = None
+            print(f"⚠️ Failed to parse custom_weights JSON; ignoring overrides: {exc}")
 
     active_scoring_method = scoring_method.lower()
     use_topsis = active_scoring_method == "topsis"
-    scoring_mode = "custom weights" if parsed_custom_weights else ("persona-based" if persona else "renewable energy")
+    if persona_custom_weights:
+        scoring_mode = "persona override weights"
+    elif parsed_custom_weights:
+        scoring_mode = "custom weights"
+    else:
+        scoring_mode = "persona-based" if persona else "renewable energy"
     print(
         "🚀 ENHANCED ENDPOINT WITH "
         f"{scoring_mode.upper()} SCORING [{active_scoring_method.upper()}] - Processing {limit} projects..."
@@ -2432,7 +2456,11 @@ async def get_enhanced_geojson(
 
     if use_topsis:
         # Determine weights for TOPSIS
-        if parsed_custom_weights:
+        if persona_custom_weights:
+            weights_for_topsis = persona_custom_weights
+            persona_for_components = persona if persona else None
+            topsis_persona_label = persona or "custom"
+        elif parsed_custom_weights:
             weights_for_topsis = parsed_custom_weights
             persona_for_components = "custom"
             topsis_persona_label = persona or "custom"
@@ -2486,7 +2514,16 @@ async def get_enhanced_geojson(
                 
                 if not topsis_info:
                     # Fallback to weighted sum if TOPSIS fails
-                    if parsed_custom_weights:
+                    if persona_custom_weights:
+                        rating_result = calculate_persona_weighted_score(
+                            project,
+                            proximity_scores,
+                            persona or "hyperscaler",
+                            "demand",
+                            user_max_price_mwh,
+                            custom_weights=persona_custom_weights,
+                        )
+                    elif parsed_custom_weights:
                         rating_result = calculate_custom_weighted_score(
                             project, proximity_scores, parsed_custom_weights
                         )
@@ -2533,7 +2570,16 @@ async def get_enhanced_geojson(
                     }
             else:
                 # Traditional weighted sum scoring
-                if parsed_custom_weights:
+                if persona_custom_weights:
+                    rating_result = calculate_persona_weighted_score(
+                        project,
+                        proximity_scores,
+                        persona or "hyperscaler",
+                        "demand",
+                        user_max_price_mwh,
+                        custom_weights=persona_custom_weights,
+                    )
+                elif parsed_custom_weights:
                     rating_result = calculate_custom_weighted_score(
                         project, proximity_scores, parsed_custom_weights
                     )
