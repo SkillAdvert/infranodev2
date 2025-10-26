@@ -101,6 +101,55 @@ PERSONA_CAPACITY_RANGES = {
     "hyperscaler": {"min": 30, "max": 1000},
 }
 
+# ============================================================================
+# POWER DEVELOPER PROJECT TYPE PERSONAS
+# ============================================================================
+# Maps greenfield/repower/stranded to component score weights
+# Same 7 business criteria as hyperscaler personas
+# Weights sum to 1.0
+
+POWER_DEVELOPER_PERSONAS: Dict[str, Dict[str, float]] = {
+    "greenfield": {
+        "capacity": 0.15,
+        "connection_speed": 0.15,
+        "resilience": 0.10,
+        "land_planning": 0.25,
+        "latency": 0.03,
+        "cooling": 0.02,
+        "price_sensitivity": 0.20,
+    },
+    "repower": {
+        "capacity": 0.15,
+        "connection_speed": 0.20,
+        "resilience": 0.12,
+        "land_planning": 0.15,
+        "latency": 0.05,
+        "cooling": 0.03,
+        "price_sensitivity": 0.15,
+    },
+    "stranded": {
+        "capacity": 0.05,
+        "connection_speed": 0.25,
+        "resilience": 0.10,
+        "land_planning": 0.05,
+        "latency": 0.05,
+        "cooling": 0.05,
+        "price_sensitivity": 0.25,
+    },
+}
+
+POWER_DEVELOPER_CAPACITY_RANGES = {
+    "greenfield": {"min": 10, "max": 500},
+    "repower": {"min": 5, "max": 500},
+    "stranded": {"min": 1, "max": 500},
+}
+
+# Validate weights sum to 1.0
+for persona_name, weights_dict in POWER_DEVELOPER_PERSONAS.items():
+    total_weight = sum(weights_dict.values())
+    if not math.isclose(total_weight, 1.0, rel_tol=1e-6):
+        print(f"⚠️ WARNING: {persona_name} weights sum to {total_weight}, not 1.0")
+
 PERSONA_CAPACITY_PARAMS = {
     "edge_computing": {"min_mw": 0.4, "ideal_mw": 2.0, "max_mw": 5.0},
     "colocation": {"min_mw": 5.0, "ideal_mw": 15.0, "max_mw": 30.0},
@@ -2969,53 +3018,273 @@ async def compare_scoring_systems(
     }
 
 
+# ============================================================================
+# TEC CONNECTIONS TRANSFORMATION
+# ============================================================================
+
+def transform_tec_to_project_schema(tec_row: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Transform a TEC connections database row to unified project schema.
+
+    TEC table has different field names than renewable_projects, so we map them:
+    - project_name → site_name
+    - development_status → development_status_short
+    - Coordinates might be NULL (we'll handle that separately)
+    """
+
+    return {
+        "id": tec_row.get("id"),
+        "ref_id": str(tec_row.get("id", "")),
+        "site_name": tec_row.get("project_name") or "Untitled Project",
+        "project_name": tec_row.get("project_name"),
+        "capacity_mw": _coerce_float(tec_row.get("capacity_mw")) or 0.0,
+        "technology_type": tec_row.get("technology_type") or "Unknown",
+        "development_status_short": tec_row.get("development_status") or "Scoping",
+        "development_status": tec_row.get("development_status"),
+        "constraint_status": tec_row.get("constraint_status"),
+        "connection_site": tec_row.get("connection_site"),
+        "substation_name": tec_row.get("substation_name"),
+        "voltage_kv": _coerce_float(tec_row.get("voltage")),
+        "latitude": _coerce_float(tec_row.get("latitude")),
+        "longitude": _coerce_float(tec_row.get("longitude")),
+        "county": None,
+        "country": "UK",
+        "operator": tec_row.get("operator") or tec_row.get("customer_name"),
+        "_source_table": "tec_connections",
+    }
+
+
 @app.post("/api/projects/power-developer-analysis")
 async def analyze_for_power_developer(
     criteria: Dict[str, Any],
     site_location: Optional[Dict[str, float]] = None,
-    target_persona: PersonaType = "hyperscaler",
+    target_persona: str = Query("greenfield", description="greenfield, repower, or stranded"),
     limit: int = Query(150),
+    source_table: str = Query(
+        "tec_connections", description="Source table: tec_connections or renewable_projects"
+    ),
 ) -> Dict[str, Any]:
-    source_table = "renewable_projects"
-    print(f"🔄 Power Developer Analysis - Using {source_table} as placeholder for demand sites")
-    projects = await query_supabase(f"{source_table}?select=*", limit=limit)
+    """
+    Power developer workflow - analyzes TEC grid connections for development opportunity.
 
-    auto_calculated_values: Dict[str, Any] = {}
-    if site_location and criteria:
-        lat = site_location.get("lat")
-        lng = site_location.get("lng")
-        if lat is not None and lng is not None:
-            proximity_list = await calculate_proximity_scores_batch(
-                [{"latitude": lat, "longitude": lng}]
+    Mirrors hyperscaler workflow exactly:
+    1. Fetch projects (from tec_connections)
+    2. Transform to schema (TEC rows → project objects)
+    3. Calculate proximity scores (infrastructure analysis)
+    4. Build component scores (7 business criteria)
+    5. Apply project type weights (greenfield/repower/stranded)
+    6. Return scored GeoJSON
+
+    Args:
+        criteria: Not used (legacy parameter, kept for compatibility)
+        site_location: Not used (legacy parameter)
+        target_persona: Project type - "greenfield", "repower", or "stranded"
+        limit: Max projects to return (default 150)
+        source_table: Data source - "tec_connections" (new) or "renewable_projects" (fallback)
+
+    Returns:
+        GeoJSON FeatureCollection with scored projects
+    """
+
+    start_time = time.time()
+
+    # ========================================================================
+    # STEP 0: Validate Input
+    # ========================================================================
+    print(f"🔄 Power Developer Analysis - Project Type: {target_persona}")
+
+    if target_persona not in POWER_DEVELOPER_PERSONAS:
+        print(f"   ⚠️ Invalid project type '{target_persona}', using 'greenfield'")
+        target_persona = "greenfield"
+
+    weights = POWER_DEVELOPER_PERSONAS[target_persona]
+
+    # ========================================================================
+    # STEP 1: Fetch Projects from Database
+    # ========================================================================
+    print(f"   📊 Fetching {limit} projects from '{source_table}'...")
+
+    try:
+        raw_rows = await query_supabase(f"{source_table}?select=*", limit=limit)
+        if not raw_rows:
+            print("   ⚠️ No projects returned from database")
+            return {
+                "type": "FeatureCollection",
+                "features": [],
+                "metadata": {"error": "No projects found", "project_type": target_persona},
+            }
+        print(f"   ✅ Loaded {len(raw_rows)} projects")
+    except Exception as exc:
+        print(f"   ❌ Database error: {exc}")
+        raise HTTPException(500, f"Failed to fetch projects: {str(exc)}")
+
+    # ========================================================================
+    # STEP 2: Transform Rows to Project Schema
+    # ========================================================================
+    print("   🔄 Transforming to project schema...")
+
+    if source_table == "tec_connections":
+        projects = [transform_tec_to_project_schema(row) for row in raw_rows]
+    else:
+        projects = raw_rows
+
+    # ========================================================================
+    # STEP 3: Filter for Valid Coordinates
+    # ========================================================================
+    valid_projects = [
+        p for p in projects if p.get("latitude") is not None and p.get("longitude") is not None
+    ]
+
+    print(f"   📍 Valid coordinates: {len(valid_projects)}/{len(projects)}")
+
+    if not valid_projects:
+        print("   ⚠️ No projects with valid coordinates")
+        return {
+            "type": "FeatureCollection",
+            "features": [],
+            "metadata": {"warning": "No valid coordinates", "project_type": target_persona},
+        }
+
+    # ========================================================================
+    # STEP 4: Calculate Infrastructure Proximity Scores
+    # ========================================================================
+    print("   🔄 Calculating proximity scores...")
+
+    try:
+        all_proximity_scores = await calculate_proximity_scores_batch(valid_projects)
+        print(f"   ✅ Proximity calculations complete")
+    except Exception as exc:
+        print(f"   ❌ Proximity calculation error: {exc}")
+        raise
+
+    # ========================================================================
+    # STEP 5: Score Each Project Using Power Developer Weights
+    # ========================================================================
+    print(f"   🔄 Scoring {len(valid_projects)} projects as '{target_persona}'...")
+
+    features: List[Dict[str, Any]] = []
+
+    for index, project in enumerate(valid_projects):
+        try:
+            proximity_scores = (
+                all_proximity_scores[index]
+                if index < len(all_proximity_scores)
+                else {
+                    "substation_score": 0.0,
+                    "transmission_score": 0.0,
+                    "fiber_score": 0.0,
+                    "ixp_score": 0.0,
+                    "water_score": 0.0,
+                    "nearest_distances": {},
+                }
             )
-            prox = proximity_list[0] if proximity_list else None
-            if prox and criteria.get("grid_infrastructure") == -1:
-                score = calculate_grid_infrastructure_score(prox)
-                auto_calculated_values["grid_infrastructure"] = {
-                    "score": score,
-                    "details": prox.get("nearest_distances", {}),
-                }
-                criteria["grid_infrastructure"] = score
-            if prox and criteria.get("digital_infrastructure") == -1:
-                score = calculate_digital_infrastructure_score(prox)
-                auto_calculated_values["digital_infrastructure"] = {
-                    "score": score,
-                    "details": prox.get("nearest_distances", {}),
-                }
-                criteria["digital_infrastructure"] = score
-            if prox and criteria.get("water_resources") == -1:
-                score = calculate_water_resources_score(prox)
-                auto_calculated_values["water_resources"] = {
-                    "score": score,
-                    "details": prox.get("nearest_distances", {}),
-                }
-                criteria["water_resources"] = score
+
+            # STEP 5A: Build component scores (7 business criteria)
+            component_scores = build_persona_component_scores(
+                project,
+                proximity_scores,
+                persona=target_persona,
+                perspective="demand",
+            )
+
+            # STEP 5B: Apply power developer weights
+            weighted_score = sum(
+                component_scores.get(criterion, 0) * weights.get(criterion, 0)
+                for criterion in component_scores
+            )
+
+            weighted_score = max(0.0, min(100.0, weighted_score))
+
+            # STEP 5C: Convert to display format (0-10 scale)
+            display_rating = round(weighted_score / 10.0, 1)
+            color_code = get_color_from_score(weighted_score)
+            rating_description = get_rating_description(weighted_score)
+
+            # STEP 5D: Build properties object
+            properties = {
+                "id": project.get("ref_id"),
+                "project_name": project.get("site_name"),
+                "site_name": project.get("site_name"),
+                "capacity_mw": project.get("capacity_mw"),
+                "technology_type": project.get("technology_type"),
+                "operator": project.get("operator"),
+                "development_status": project.get("development_status_short"),
+                "connection_site": project.get("connection_site"),
+                "substation_name": project.get("substation_name"),
+                "voltage_kv": project.get("voltage_kv"),
+                "investment_rating": display_rating,
+                "rating_description": rating_description,
+                "color_code": color_code,
+                "component_scores": {k: round(v, 1) for k, v in component_scores.items()},
+                "weighted_contributions": {
+                    k: round(component_scores[k] * weights.get(k, 0), 1) for k in component_scores
+                },
+                "project_type": target_persona,
+                "project_type_weights": weights,
+                "internal_total_score": round(weighted_score, 1),
+                "nearest_infrastructure": proximity_scores.get("nearest_distances", {}),
+            }
+
+            # STEP 5E: Build GeoJSON feature
+            feature = {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [project["longitude"], project["latitude"]],
+                },
+                "properties": properties,
+            }
+
+            features.append(feature)
+
+        except Exception as exc:
+            print(f"   ⚠️ Error scoring project {index + 1}: {exc}")
+            continue
+
+    # ========================================================================
+    # STEP 6: Sort by Investment Rating
+    # ========================================================================
+    features_sorted = sorted(
+        features,
+        key=lambda f: f.get("properties", {}).get("investment_rating", 0),
+        reverse=True,
+    )
+
+    # ========================================================================
+    # STEP 7: Log Results and Return
+    # ========================================================================
+    processing_time = time.time() - start_time
+
+    print(f"   ✅ Scoring complete: {len(features_sorted)} projects in {processing_time:.2f}s")
+
+    if features_sorted:
+        top = features_sorted[0]["properties"]
+        print(
+            f"   🏆 Top project: {top.get('project_name')} - "
+            f"Rating {top.get('investment_rating')}/10 • {top.get('capacity_mw')}MW"
+        )
 
     return {
-        "projects": projects,
-        "criteria": criteria,
-        "auto_calculated_values": auto_calculated_values,
-        "target_persona": target_persona,
+        "type": "FeatureCollection",
+        "features": features_sorted,
+        "metadata": {
+            "scoring_system": "Power Developer - Project Type Analysis",
+            "project_type": target_persona,
+            "project_type_weights": weights,
+            "source_table": source_table,
+            "total_projects_processed": len(raw_rows),
+            "projects_with_valid_coords": len(valid_projects),
+            "projects_scored": len(features_sorted),
+            "processing_time_seconds": round(processing_time, 2),
+            "algorithm_version": "2.2 - Power Developer Workflow",
+            "rating_scale": {
+                "9.0-10.0": "Excellent",
+                "8.0-8.9": "Very Good",
+                "7.0-7.9": "Good",
+                "6.0-6.9": "Above Average",
+                "5.0-5.9": "Average",
+            },
+        },
     }
 
 
