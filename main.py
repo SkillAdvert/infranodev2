@@ -1557,12 +1557,45 @@ def calculate_price_sensitivity_score(
 
     return max(0.0, min(100.0, score))
 
+def _build_shared_persona_component_scores(
+    project: Dict[str, Any],
+    proximity_scores: Dict[str, float],
+    perspective: str = "demand",
+    user_max_price_mwh: Optional[float] = None,
+) -> Dict[str, float]:
+    """Compute persona-agnostic component scores that rely on proximity metrics."""
+
+    connection_speed_score = calculate_connection_speed_score(project, proximity_scores)
+    resilience_score = calculate_resilience_score(project, proximity_scores)
+    land_planning_score = calculate_development_stage_score(
+        project.get("development_status_short", ""),
+        perspective,
+    )
+    latency_score = calculate_digital_infrastructure_score(proximity_scores)
+    cooling_score = calculate_water_resources_score(proximity_scores)
+    price_sensitivity_score = calculate_price_sensitivity_score(
+        project,
+        proximity_scores,
+        user_max_price_mwh,
+    )
+
+    return {
+        "connection_speed": connection_speed_score,
+        "resilience": resilience_score,
+        "land_planning": land_planning_score,
+        "latency": latency_score,
+        "cooling": cooling_score,
+        "price_sensitivity": price_sensitivity_score,
+    }
+
+
 def build_persona_component_scores(
     project: Dict[str, Any],
     proximity_scores: Dict[str, float],
     persona: Optional[str] = None,
     perspective: str = "demand",
     user_max_price_mwh: Optional[float] = None,  # NEW parameter
+    shared_component_scores: Optional[Dict[str, float]] = None,
 ) -> Dict[str, float]:
     """
     Compute 7 component scores matching business criteria.
@@ -1573,57 +1606,26 @@ def build_persona_component_scores(
         persona: Persona type (for capacity scoring)
         perspective: 'demand' (data center) or 'supply' (power developer)
         user_max_price_mwh: User's max acceptable price for price_sensitivity
+        shared_component_scores: Optional cache of persona-agnostic scores
 
     Returns:
         Dictionary with 7 component scores (0-100 each)
     """
 
-    # 1. Capacity - direct from existing function
-    capacity_score = calculate_capacity_component_score(
+    base_scores = (
+        dict(shared_component_scores)
+        if shared_component_scores is not None
+        else _build_shared_persona_component_scores(
+            project, proximity_scores, perspective, user_max_price_mwh
+        )
+    )
+
+    base_scores["capacity"] = calculate_capacity_component_score(
         project.get("capacity_mw", 0) or 0,
         persona,
     )
 
-    # 2. Connection Speed - NEW function
-    connection_speed_score = calculate_connection_speed_score(
-        project,
-        proximity_scores
-    )
-
-    # 3. Resilience - NEW function
-    resilience_score = calculate_resilience_score(
-        project,
-        proximity_scores
-    )
-
-    # 4. Land & Planning - use development stage scoring
-    land_planning_score = calculate_development_stage_score(
-        project.get("development_status_short", ""),
-        perspective,
-    )
-
-    # 5. Latency - use digital infrastructure scoring (fiber + IXP)
-    latency_score = calculate_digital_infrastructure_score(proximity_scores)
-
-    # 6. Cooling - use water resources scoring
-    cooling_score = calculate_water_resources_score(proximity_scores)
-
-    # 7. Price Sensitivity - NEW function
-    price_sensitivity_score = calculate_price_sensitivity_score(
-        project,
-        proximity_scores,
-        user_max_price_mwh
-    )
-
-    return {
-        "capacity": capacity_score,
-        "connection_speed": connection_speed_score,
-        "resilience": resilience_score,
-        "land_planning": land_planning_score,
-        "latency": latency_score,
-        "cooling": cooling_score,
-        "price_sensitivity": price_sensitivity_score,
-    }
+    return base_scores
 
 def calculate_persona_weighted_score(
     project: Dict[str, Any],
@@ -1631,6 +1633,7 @@ def calculate_persona_weighted_score(
     persona: PersonaType = "hyperscaler",
     perspective: str = "demand",
     user_max_price_mwh: Optional[float] = None,  # NEW parameter
+    shared_component_scores: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     """
     Calculate persona-based weighted score using 7 business criteria.
@@ -1646,7 +1649,8 @@ def calculate_persona_weighted_score(
         proximity_scores,
         persona,
         perspective,
-        user_max_price_mwh  # Pass through to price calculation
+        user_max_price_mwh,  # Pass through to price calculation
+        shared_component_scores,
     )
 
     # Calculate weighted score using NEW 7 components
@@ -1944,11 +1948,17 @@ def calculate_enhanced_investment_rating(
 
 def calculate_best_customer_match(project: Dict[str, Any], proximity_scores: Dict[str, float]) -> Dict[str, Any]:
     customer_scores: Dict[str, float] = {}
+    shared_scores = _build_shared_persona_component_scores(project, proximity_scores)
     for persona in ["hyperscaler", "colocation", "edge_computing"]:
         capacity_mw = project.get("capacity_mw", 0)
         capacity_range = PERSONA_CAPACITY_RANGES[persona]
         if capacity_range["min"] <= capacity_mw <= capacity_range["max"]:
-            scoring_result = calculate_persona_weighted_score(project, proximity_scores, persona)  # type: ignore[arg-type]
+            scoring_result = calculate_persona_weighted_score(
+                project,
+                proximity_scores,
+                persona,  # type: ignore[arg-type]
+                shared_component_scores=shared_scores,
+            )
             customer_scores[persona] = scoring_result["investment_rating"]
         else:
             customer_scores[persona] = 2.0
