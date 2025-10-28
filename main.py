@@ -7,13 +7,33 @@ import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Dict, Iterable, List, Literal, Optional, Sequence, Tuple, Union
 
 import httpx
 from dotenv import load_dotenv
 from fastapi import Body, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+from backend.persona_scoring import (
+    INFRASTRUCTURE_HALF_DISTANCE_KM,
+    INFRASTRUCTURE_SEARCH_RADIUS_KM,
+    PERSONA_CAPACITY_RANGES,
+    PERSONA_WEIGHTS,
+    POWER_DEVELOPER_CAPACITY_RANGES,
+    POWER_DEVELOPER_PERSONAS,
+    PersonaType,
+    PowerDeveloperPersona,
+    build_persona_component_scores,
+    calculate_best_customer_match,
+    calculate_custom_weighted_score,
+    calculate_persona_weighted_score,
+    get_color_from_score,
+    get_rating_description,
+    resolve_power_developer_persona,
+    filter_projects_by_persona_capacity,
+)
+from backend.scoring_algorithm import calculate_persona_topsis_score
 
 print("Booting model...")
 _boot_start_time = time.time()
@@ -22,6 +42,10 @@ print("Initializing environment configuration...")
 _env_start_time = time.time()
 load_dotenv()
 print(f"[\u2713] Environment variables loaded in {time.time() - _env_start_time:.2f}s")
+
+KM_PER_DEGREE_LAT = 111.32
+INFRASTRUCTURE_CACHE_TTL_SECONDS = int(os.getenv("INFRA_CACHE_TTL", "600"))
+GRID_CELL_DEGREES = 0.5
 
 try:
     print("Loading renewable financial model components...")
@@ -57,130 +81,6 @@ SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
 
 print(f"✅ SUPABASE_URL: {SUPABASE_URL}")
 print(f"✅ SUPABASE_KEY exists: {bool(SUPABASE_KEY)}")
-
-PersonaType = Literal["hyperscaler", "colocation", "edge_computing"]
-PowerDeveloperPersona = Literal["greenfield", "repower", "stranded"]
-
-KM_PER_DEGREE_LAT = 111.32
-INFRASTRUCTURE_CACHE_TTL_SECONDS = int(os.getenv("INFRA_CACHE_TTL", "600"))
-GRID_CELL_DEGREES = 0.5
-
-# Updated persona weights matching 7 business criteria
-PERSONA_WEIGHTS: Dict[str, Dict[str, float]] = {
-    "hyperscaler": {
-        "capacity": 0.244,                   # 24.4% - Large capacity critical
-        "connection_speed": 0.167,           # 16.7% - Fast grid access important
-        "resilience": 0.133,                 # 13.3% - Backup infrastructure needed
-        "land_planning": 0.2,                # 20.0% - Want shovel-ready sites
-        "latency": 0.056,                    # 5.6% - Not critical for hyperscale
-        "cooling": 0.144,                    # 14.4% - Critical for high-density
-        "price_sensitivity": 0.056,          # 5.6% - Less price-sensitive (quality matters)
-    },
-    "colocation": {
-        "capacity": 0.141,                   # 14.1% - Moderate capacity
-        "connection_speed": 0.163,           # 16.3% - Reliable connection important
-        "resilience": 0.196,                 # 19.6% - Multi-tenant needs redundancy
-        "land_planning": 0.163,              # 16.3% - Want ready sites
-        "latency": 0.217,                    # 21.7% - Critical for tenant diversity
-        "cooling": 0.087,                    # 8.7% - Important but manageable
-        "price_sensitivity": 0.033,          # 3.3% - Cost matters but not primary
-    },
-    "edge_computing": {
-        "capacity": 0.097,                   # 9.7% - Small footprint
-        "connection_speed": 0.129,           # 12.9% - Decent connection needed
-        "resilience": 0.108,                 # 10.8% - Some redundancy
-        "land_planning": 0.28,               # 28.0% - MUST be fast to deploy
-        "latency": 0.247,                    # 24.7% - CRITICAL for edge workloads
-        "cooling": 0.054,                    # 5.4% - Minimal cooling needs
-        "price_sensitivity": 0.086,          # 8.6% - Cost-sensitive for distributed
-    },
-}
-
-PERSONA_CAPACITY_RANGES = {
-    "edge_computing": {"min": 0.4, "max": 5},
-    "colocation": {"min": 5, "max": 30},
-    "hyperscaler": {"min": 30, "max": 1000},
-}
-
-# ============================================================================
-# POWER DEVELOPER PROJECT TYPE PERSONAS
-# ============================================================================
-# Maps greenfield/repower/stranded to component score weights
-# Same 7 business criteria as hyperscaler personas
-# Weights sum to 1.0
-
-POWER_DEVELOPER_PERSONAS: Dict[str, Dict[str, float]] = {
-    "greenfield": {
-        "capacity": 0.15,
-        "connection_speed": 0.15,
-        "resilience": 0.10,
-        "land_planning": 0.25,
-        "latency": 0.03,
-        "cooling": 0.02,
-        "price_sensitivity": 0.20,
-    },
-    "repower": {
-        "capacity": 0.15,
-        "connection_speed": 0.20,
-        "resilience": 0.12,
-        "land_planning": 0.15,
-        "latency": 0.05,
-        "cooling": 0.03,
-        "price_sensitivity": 0.15,
-    },
-    "stranded": {
-        "capacity": 0.05,
-        "connection_speed": 0.25,
-        "resilience": 0.10,
-        "land_planning": 0.05,
-        "latency": 0.05,
-        "cooling": 0.05,
-        "price_sensitivity": 0.25,
-    },
-}
-
-POWER_DEVELOPER_CAPACITY_RANGES = {
-    "greenfield": {"min": 1, "max": 1000},
-    "repower": {"min": 1, "max": 1000},
-    "stranded": {"min": 1, "max": 1000},
-}
-
-
-def resolve_power_developer_persona(
-    raw_value: Optional[str],
-) -> Tuple[PowerDeveloperPersona, str, str]:
-    """Normalize the requested persona and flag how it was resolved.
-
-    Returns a tuple of:
-        (effective_persona, requested_value, resolution_status)
-
-    Where ``resolution_status`` is one of ``"defaulted"`` (no value supplied),
-    ``"invalid"`` (value supplied but not recognized), or ``"valid"``.
-    """
-
-    requested_value = (raw_value or "").strip()
-    normalized_value = requested_value.lower()
-
-    if not normalized_value:
-        return "greenfield", requested_value, "defaulted"
-
-    if normalized_value not in POWER_DEVELOPER_PERSONAS:
-        return "greenfield", requested_value, "invalid"
-
-    return cast(PowerDeveloperPersona, normalized_value), requested_value, "valid"
-
-# Validate weights sum to 1.0
-for persona_name, weights_dict in POWER_DEVELOPER_PERSONAS.items():
-    total_weight = sum(weights_dict.values())
-    if not math.isclose(total_weight, 1.0, rel_tol=1e-6):
-        print(f"⚠️ WARNING: {persona_name} weights sum to {total_weight}, not 1.0")
-
-PERSONA_CAPACITY_PARAMS = {
-    "edge_computing": {"min_mw": 0.4, "ideal_mw": 2.0, "max_mw": 5.0},
-    "colocation": {"min_mw": 5.0, "ideal_mw": 15.0, "max_mw": 30.0},
-    "hyperscaler": {"min_mw": 30.0, "ideal_mw": 75.0, "max_mw": 200.0},
-    "default": {"min_mw": 5.0, "ideal_mw": 50.0, "max_mw": 100.0},
-}
 
 # ============================================================================
 # HARD-CODED TNUoS ZONES (No DB calls needed)
@@ -1085,748 +985,237 @@ def _distance_to_line_feature(feature: LineFeature, lat: float, lon: float) -> f
                 break
     return best if best != float("inf") else 9999.0
 
-def get_color_from_score(score_out_of_100: float) -> str:
-    display_score = score_out_of_100 / 10.0
-    if display_score >= 9.0:
-        return "#00DD00"
-    if display_score >= 8.0:
-        return "#33FF33"
-    if display_score >= 7.0:
-        return "#7FFF00"
-    if display_score >= 6.0:
-        return "#CCFF00"
-    if display_score >= 5.0:
-        return "#FFFF00"
-    if display_score >= 4.0:
-        return "#FFCC00"
-    if display_score >= 3.0:
-        return "#FF9900"
-    if display_score >= 2.0:
-        return "#FF6600"
-    if display_score >= 1.0:
-        return "#FF3300"
-    return "#CC0000"
-
-
-def get_rating_description(score_out_of_100: float) -> str:
-    display_score = score_out_of_100 / 10.0
-    if display_score >= 9.0:
-        return "Excellent"
-    if display_score >= 8.0:
-        return "Very Good"
-    if display_score >= 7.0:
-        return "Good"
-    if display_score >= 6.0:
-        return "Above Average"
-    if display_score >= 5.0:
-        return "Average"
-    if display_score >= 4.0:
-        return "Below Average"
-    if display_score >= 3.0:
-        return "Poor"
-    if display_score >= 2.0:
-        return "Very Poor"
-    if display_score >= 1.0:
-        return "Bad"
-    return "Very Bad"
-
-
-def calculate_capacity_component_score(capacity_mw: float, persona: Optional[str] = None) -> float:
-    persona_key = (persona or "default").lower()
-    if persona_key == "custom":
-        persona_key = "default"
-    params = PERSONA_CAPACITY_PARAMS.get(persona_key, PERSONA_CAPACITY_PARAMS["default"])
-    ideal = params.get("ideal_mw", 75.0)
-    logistic_argument = capacity_mw - ideal
-    score = 100.0 / (1.0 + math.exp(-0.05 * logistic_argument))
-    return max(0.0, min(100.0, float(score)))
-
-
-def calculate_development_stage_score(status: str, perspective: str = "demand") -> float:
-    """
-    Score based on BTM (Behind-the-Meter) intervention timing and planning viability.
-
-    Scoring philosophy:
-    - Peak scores (90-95): Active planning or reactivatable consents (optimal BTM timing)
-    - High scores (70-85): Consented or exempt sites (strong BTM potential)
-    - Mid scores (40-45): Early concept or awaiting construction (narrowing window)
-    - Low scores (0-35): Refused, withdrawn, or under construction (poor BTM fit)
-
-    Args:
-        status: Development status from renewable_projects.development_status_short
-        perspective: 'demand' (data center) or 'supply' (power developer)
-
-    Returns:
-        Float score 0-100 based on BTM intervention suitability
-    """
-    status_str = str(status).lower().strip()
-
-    # BTM-optimized scoring spectrum (Set 2)
-    # Maps to renewable_projects.development_status_short column
-    STATUS_SCORES = {
-        "decommissioned": 0,                    # Asset dismantled — no potential
-        "abandoned": 5,                         # Project halted; non-recoverable
-        "appeal withdrawn": 10,                 # Appeal dropped — closed path
-        "appeal refused": 15,                   # Appeal denied — minimal viability
-        "under construction": 20,               # Build started; BTM window closed
-        "appeal lodged": 25,                    # Legal uncertainty; long timelines
-        "application refused": 30,              # Denied; redesign needed
-        "application withdrawn": 35,            # Paused; may re-enter
-        "awaiting construction": 40,            # Consented; BTM opportunity narrowing
-        "no application made": 45,              # Concept only; untested
-        "secretary of state granted": 80,       # Nationally endorsed; fixed design limits BTM
-        "planning expired": 70,                 # Previously consented; reactivatable — HIGH BTM
-        "no application required": 100,          # Permitted development — VERY STRONG BTM
-        "application submitted": 100,            # Live planning — OPTIMAL BTM timing
-        "revised": 90,                          # Resubmitted — TOP-TIER BTM suitability
-
-        # Legacy aliases for backward compatibility
-        "consented": 70,                        # Map to "awaiting construction" equivalent
-        "granted": 70,                          # Same as consented
-        "in planning": 55,                      # Map to "no application made" equivalent
-        "operational": 10,                       # Same as decommissioned (no BTM value)
-    }
-
-    # Try exact match first
-    if status_str in STATUS_SCORES:
-        base_score = STATUS_SCORES[status_str]
+def calculate_base_investment_score_renewable(project: Dict[str, Any]) -> float:
+    capacity = project.get("capacity_mw", 0) or 0
+    status = str(project.get("development_status_short", "")).lower()
+    tech = str(project.get("technology_type", "")).lower()
+    if capacity >= 200:
+        capacity_score = 30.0
+    elif capacity >= 100:
+        capacity_score = 80.0
+    elif capacity >= 50:
+        capacity_score = 70.0
+    elif capacity >= 25:
+        capacity_score = 90.0
+    elif capacity >= 10:
+        capacity_score = 60.0
+    elif capacity >= 5:
+        capacity_score = 30.0
     else:
-        # Fallback: partial string matching for database variants
-        # Example: "Planning Consent Granted" → matches "granted" → 40
-        base_score = 45.0  # Default to "concept" level for unknowns
+        capacity_score = 15.0
 
-        for key, score in STATUS_SCORES.items():
-            if key in status_str:
-                base_score = score
-                break
-
-    # Perspective adjustment (optional)
-    if perspective == "supply":
-        # Power developers may value operational/construction sites differently
-        # Could add logic here if needed, but generally BTM scoring is demand-focused
-        pass
-
-    return float(base_score)
-
-
-def calculate_technology_score(tech_type: str) -> float:
-    tech = str(tech_type).lower()
-    if "solar" in tech:
-        return 80.0
-    if "battery" in tech:
-        return 80.0
-    if "wind" in tech:
-        return 60.0
-    if "hybrid" in tech:
-        return 100.0
-    if "CCGT" in tech:
-        return 100.0
-    return 80.0
-
-
-def calculate_grid_infrastructure_score(proximity_scores: Dict[str, float]) -> float:
-    distances = proximity_scores.get("nearest_distances", {})
-    substation_distance = distances.get("substation_km")
-    transmission_distance = distances.get("transmission_km")
-
-    substation_raw = 0.0
-    if substation_distance is not None:
-        substation_raw = math.exp(-substation_distance / INFRASTRUCTURE_HALF_DISTANCE_KM["substation"])
-    transmission_raw = 0.0
-    if transmission_distance is not None:
-        transmission_raw = math.exp(-transmission_distance / INFRASTRUCTURE_HALF_DISTANCE_KM["transmission"])
-
-    score = 50.0 * (substation_raw + transmission_raw)
-    return max(0.0, min(100.0, float(score)))
-
-
-def calculate_digital_infrastructure_score(proximity_scores: Dict[str, float]) -> float:
-    distances = proximity_scores.get("nearest_distances", {})
-    fiber_distance = distances.get("fiber_km")
-    ixp_distance = distances.get("ixp_km")
-
-    fiber_raw = 0.0
-    if fiber_distance is not None:
-        fiber_raw = math.exp(-fiber_distance / INFRASTRUCTURE_HALF_DISTANCE_KM["fiber"])
-    ixp_raw = 0.0
-    if ixp_distance is not None:
-        ixp_raw = math.exp(-ixp_distance / INFRASTRUCTURE_HALF_DISTANCE_KM["ixp"])
-
-    score = 50.0 * (fiber_raw + ixp_raw)
-    return max(0.0, min(100.0, float(score)))
-
-
-def calculate_water_resources_score(proximity_scores: Dict[str, float]) -> float:
-    distances = proximity_scores.get("nearest_distances", {})
-    water_distance = distances.get("water_km")
-    water_raw = 0.0
-    if water_distance is not None:
-        water_raw = math.exp(-water_distance / INFRASTRUCTURE_HALF_DISTANCE_KM["water"])
-    score = 100.0 * water_raw
-    return max(0.0, min(100.0, float(score)))
-
-
-def calculate_lcoe_score(development_status_short: str) -> float:
-    status_map = {
-        "operational": 10.0,
-        "under construction": 50.0,
-        "consented": 85.0,
-        "in planning": 70.0,
-        "site identified": 50.0,
-        "concept": 30.0,
-        "unknown": 50.0,
-    }
-    normalized = (development_status_short or "unknown").strip().lower()
-    score = status_map.get(normalized, status_map["unknown"])
-    return max(0.0, min(100.0, float(score)))
-
-
-def calculate_tnuos_score(project_lat: float, project_lng: float) -> float:
-    lat_normalized = (project_lat - 49.5) / (60.0 - 49.5)
-    estimated_tariff = -2.0 + (17.0 * lat_normalized)
-    min_tariff = -3.0
-    max_tariff = 16.0
-    if estimated_tariff <= min_tariff:
-        percentile_score = 100.0
-    elif estimated_tariff >= max_tariff:
-        percentile_score = 0.0
+    if "operational" in status:
+        stage_score = 10.0
+    elif "construction" in status:
+        stage_score = 60.0
+    elif "granted" in status:
+        stage_score = 90.0
+    elif "submitted" in status:
+        stage_score = 80.0
+    elif "planning" in status:
+        stage_score = 70.0
+    elif "pre-planning" in status:
+        stage_score = 60.0
     else:
-        normalized_position = (estimated_tariff - min_tariff) / (max_tariff - min_tariff)
-        percentile_score = 100.0 * (1.0 - normalized_position)
-    return min(100.0, max(0.0, percentile_score))
-
-
-def estimate_capacity_factor(
-    tech_type: str, latitude: float, user_provided: Optional[float] = None
-) -> float:
-    """Estimate a reasonable capacity factor for the given technology."""
-
-    def clamp(value: float, minimum: float, maximum: float) -> float:
-        return max(minimum, min(maximum, value))
-
-    if user_provided is not None:
-        try:
-            return clamp(float(user_provided), 5.0, 95.0)
-        except (TypeError, ValueError):
-            # Fall back to estimation if value cannot be converted
-            pass
-
-    tech = str(tech_type).lower()
-    lat = float(latitude or 0.0)
+        stage_score = 50.0
 
     if "solar" in tech:
-        base_cf = 12.0 - ((lat - 50.0) / 8.0) * 2.0
-        return clamp(base_cf, 9.0, 13.0)
-    if "wind" in tech:
-        if "offshore" in tech:
-            return 45.0
-        base_cf = 28.0 + ((lat - 50.0) / 8.0) * 7.0
-        return clamp(base_cf, 25.0, 38.0)
-    if "battery" in tech or "bess" in tech:
-        return 20.0
-    if "hydro" in tech:
-        return 50.0
-    if "gas" in tech or "ccgt" in tech:
-        return 70.0
-    if "biomass" in tech:
-        return 70.0
-    if "hybrid" in tech:
-        return 50
-    return 30.0
-
-
-def calculate_connection_speed_score(
-    project: Dict[str, Any],
-    proximity_scores: Dict[str, float]
-) -> float:
-    """
-    Score based on grid connection speed potential.
-
-    Factors:
-    - Development stage (proxy for grid agreement status)
-    - Proximity to substation (faster connection)
-    - Grid infrastructure quality
-
-    PLACEHOLDER: In production, would use:
-    - Actual grid queue position data
-    - Substation headroom/capacity data
-    - DNO constraint data
-    - Curtailment risk scores
-
-    Returns: 0-100 score (higher = faster connection expected)
-    """
-    # Get development stage (indicates grid agreement likelihood)
-    dev_status_raw = project.get("development_status_short", "")
-    dev_status = str(dev_status_raw).lower()
-
-    base_stage_score = calculate_development_stage_score(dev_status)
-    stage_min, stage_max = 20.0, 95.0
-    if stage_max > stage_min:
-        normalized = (base_stage_score - stage_min) / (stage_max - stage_min)
-        normalized = max(0.0, min(1.0, normalized))
-        stage_score = 15.0 + (normalized * (100.0 - 15.0))
+        tech_score = 80.0
+    elif "battery" in tech:
+        tech_score = 85.0
+    elif "wind" in tech:
+        tech_score = 80.0
+    elif "hybrid" in tech:
+        tech_score = 100.0
     else:
-        stage_score = base_stage_score
-    stage_score = max(15.0, min(100.0, stage_score))
+        tech_score = 70.0
 
-    # Proximity to substation (closer = faster/cheaper connection)
-    distances = proximity_scores.get("nearest_distances", {})
-    substation_km = distances.get("substation_km", 999)
-
-    substation_score = 100.0 * math.exp(-substation_km / 30.0)
-
-    transmission_km = distances.get("transmission_km", 999)
-    transmission_score = 100.0 * math.exp(-transmission_km / 50.0)
-
-    # Combine: 50% stage, 30% substation proximity, 20% transmission proximity
-    final_score = (stage_score * 0.50) + (substation_score * 0.30) + (transmission_score * 0.20)
-
-    return max(0.0, min(100.0, final_score))
+    base_score = capacity_score * 0.30 + stage_score * 0.50 + tech_score * 0.20
+    return max(0.0, min(100.0, base_score))
 
 
-def calculate_resilience_score(
-    project: Dict[str, Any],
-    proximity_scores: Dict[str, float]
-) -> float:
-    """
-    Score based on infrastructure resilience/redundancy.
+def calculate_infrastructure_bonus_renewable(proximity_scores: Dict[str, float]) -> float:
+    grid_bonus = 0.0
+    substation_score = proximity_scores.get("substation_score", 0.0)
+    transmission_score = proximity_scores.get("transmission_score", 0.0)
+    if substation_score > 40:
+        grid_bonus += 15.0
+    elif substation_score > 25:
+        grid_bonus += 10.0
+    elif substation_score > 10:
+        grid_bonus += 5.0
+    if transmission_score > 30:
+        grid_bonus += 10.0
+    elif transmission_score > 15:
+        grid_bonus += 5.0
+    grid_bonus = min(25.0, grid_bonus)
 
-    Factors:
-    - Number of nearby backup infrastructure options
-    - Technology type (battery storage = onsite firming)
-    - Multiple substation options within range
+    digital_bonus = 0.0
+    fiber_score = proximity_scores.get("fiber_score", 0.0)
+    ixp_score = proximity_scores.get("ixp_score", 0.0)
+    if fiber_score > 15:
+        digital_bonus += 5.0
+    elif fiber_score > 8:
+        digital_bonus += 3.0
+    if ixp_score > 8:
+        digital_bonus += 5.0
+    elif ixp_score > 4:
+        digital_bonus += 2.0
+    digital_bonus = min(10.0, digital_bonus)
 
-    PLACEHOLDER: In production, would use:
-    - Actual N/N+1/2N redundancy analysis
-    - Onsite BESS capacity data
-    - Gas backup availability
-    - Multiple grid connection options
-    - Dual fiber route availability
+    water_bonus = 0.0
+    water_score = proximity_scores.get("water_score", 0.0)
+    if water_score > 10:
+        water_bonus = 5.0
+    elif water_score > 5:
+        water_bonus = 3.0
+    elif water_score > 2:
+        water_bonus = 1.0
 
-    Returns: 0-100 score (higher = more resilient)
-    """
-    distances = proximity_scores.get("nearest_distances", {})
-
-    # Count "good" backup options (within reasonable distance)
-    backup_count = 0
-
-    # Primary substation (<15km = excellent)
-    substation_km = distances.get("substation_km", 999)
-    if substation_km < 15:
-        backup_count += 4  # Close enough for multiple connection options
-    elif substation_km < 30:
-        backup_count += 3
-
-    # Transmission line access (<40km)
-    transmission_km = distances.get("transmission_km", 999)
-    if transmission_km < 30:
-        backup_count += 2
-
-    # Technology bonus: Battery storage = onsite firming
-    tech_type = str(project.get("technology_type", "")).lower()
-    if "battery" in tech_type or "bess" in tech_type:
-        backup_count += 1  # Significant resilience boost
-    elif "hybrid" in tech_type:
-        backup_count += 3  # Some onsite storage
-
-    # Convert count to score (0-10 options mapped to 0-100)
-    # Max realistic = 10 options (2+1+2+1+1+2+1 with battery)
-    resilience_score = (backup_count / 10.0) * 100.0
-
-    return max(0.0, min(100.0, resilience_score))
+    return grid_bonus + digital_bonus + water_bonus
 
 
-def calculate_price_sensitivity_score(
+def calculate_enhanced_investment_rating(
     project: Dict[str, Any],
     proximity_scores: Dict[str, float],
-    user_max_price_mwh: Optional[float] = None
-) -> float:
-    """
-    Score based on total power cost vs. user's budget.
-
-    Calculation:
-    - Estimated LCOE (levelized cost of energy)
-    - TNUoS transmission charges
-    - Total = LCOE + TNUoS impact
-    - Compare to user's acceptable price range
-
-    PLACEHOLDER: In production, would use:
-    - Actual PPA prices available at site
-    - Real-time merchant price forecasts
-    - Grid connection cost estimates
-    - Curtailment risk financial impact
-
-    Args:
-        user_max_price_mwh: User's maximum acceptable price (£/MWh)
-                           If None, score all sites relatively
-
-    Returns: 0-100 score (higher = better value for money)
-    """
-    # Get estimated LCOE for this site
-    tech_type = str(project.get("technology_type", "")).lower()
-    lat = project.get("latitude", 0)
-    lng = project.get("longitude", 0)
-
-    # Estimate LCOE based on technology and location
-    # These are rough UK averages for reference
-    base_lcoe = 60.0  # £/MWh default
-    reference_cf = 0.30
-
-    if "solar" in tech_type:
-        base_lcoe = 52.0  # Solar LCOE in UK
-        reference_cf = 0.12
-    elif "wind" in tech_type:
-        if "offshore" in tech_type:
-            base_lcoe = 80.0  # Offshore wind
-            reference_cf = 0.40
-        else:
-            base_lcoe = 60.0  # Onshore wind
-            reference_cf = 0.30
-    elif "battery" in tech_type or "bess" in tech_type:
-        base_lcoe = 65.0  # Battery arbitrage
-        reference_cf = 0.20
-    elif "hydro" in tech_type:
-        base_lcoe = 70.0  # Hydro (excellent)
-        reference_cf = 0.35
-    elif "biomass" in tech_type:
-        base_lcoe = 85.0  # Biomass (expensive)
-        reference_cf = 0.70
-    elif "gas" in tech_type or "ccgt" in tech_type:
-        base_lcoe = 70.0  # Gas (fuel dependent)
-        reference_cf = 0.55
-    elif "hybrid" in tech_type:
-        reference_cf = 0.25
-
-    user_cf = project.get("capacity_factor")
-    capacity_factor_pct = estimate_capacity_factor(tech_type, lat, user_cf)
-    capacity_factor = capacity_factor_pct / 100.0
-
-    adjusted_lcoe = base_lcoe
-    if capacity_factor > 0:
-        adjusted_lcoe = base_lcoe * (reference_cf / capacity_factor)
-
-    # Get TNUoS estimate (£/kW/year converted to £/MWh impact)
-    # TNUoS score is 0-100, need to convert to actual cost
-    tnuos_percentile = calculate_tnuos_score(lat, lng)
-
-    # Map TNUoS percentile to actual cost impact
-    # UK range: -£3 to +£16/kW/year
-    # For 1MW load at 40% capacity factor: impact ~£5-8/MWh
-    tnuos_min = -3.0  # £/kW (credits in Scotland)
-    tnuos_max = 16.0  # £/kW (charges in South)
-
-    # Convert percentile (0-100) to actual tariff
-    tnuos_tariff = tnuos_min + ((100 - tnuos_percentile) / 100.0) * (tnuos_max - tnuos_min)
-
-    # Convert £/kW/year to £/MWh impact (assuming 40% capacity factor)
-    # Annual hours = 8760, capacity factor hours = 3504
-    annual_hours = 8760
-    capacity_hours = annual_hours * capacity_factor
-    tnuos_mwh_impact = (
-        (abs(tnuos_tariff) * 1000) / capacity_hours if capacity_hours > 0 else 0.0
-    )
-
-    # Total estimated cost
-    if tnuos_tariff < 0:
-        # Negative tariff = credit, reduces cost
-        total_cost_mwh = adjusted_lcoe - tnuos_mwh_impact
-    else:
-        # Positive tariff = charge, increases cost
-        total_cost_mwh = adjusted_lcoe + tnuos_mwh_impact
-
-    # Score based on user's budget
-    if user_max_price_mwh:
-        # User specified a max price
-        if total_cost_mwh <= user_max_price_mwh:
-            # Within budget - score based on how much cheaper
-            savings_pct = (user_max_price_mwh - total_cost_mwh) / user_max_price_mwh
-            score = 50 + (savings_pct * 50)  # 50-100 range
-        else:
-            # Over budget - penalize proportionally
-            overage_pct = (total_cost_mwh - user_max_price_mwh) / user_max_price_mwh
-            score = 50 * math.exp(-overage_pct * 2)  # Exponential decay
-    else:
-        # No user budget specified - score relatively
-        # Lower cost = higher score
-        # Assume range: £40-100/MWh
-        min_expected = 40.0
-        max_expected = 100.0
-
-        normalized = (total_cost_mwh - min_expected) / (max_expected - min_expected)
-        score = 100 * (1 - min(1.0, max(0.0, normalized)))
-
-    return max(0.0, min(100.0, score))
-
-def _build_shared_persona_component_scores(
-    project: Dict[str, Any],
-    proximity_scores: Dict[str, float],
-    perspective: str = "demand",
-    user_max_price_mwh: Optional[float] = None,
-) -> Dict[str, float]:
-    """Compute persona-agnostic component scores that rely on proximity metrics."""
-
-    connection_speed_score = calculate_connection_speed_score(project, proximity_scores)
-    resilience_score = calculate_resilience_score(project, proximity_scores)
-    land_planning_score = calculate_development_stage_score(
-        project.get("development_status_short", ""),
-        perspective,
-    )
-    latency_score = calculate_digital_infrastructure_score(proximity_scores)
-    cooling_score = calculate_water_resources_score(proximity_scores)
-    price_sensitivity_score = calculate_price_sensitivity_score(
-        project,
-        proximity_scores,
-        user_max_price_mwh,
-    )
-
-    return {
-        "connection_speed": connection_speed_score,
-        "resilience": resilience_score,
-        "land_planning": land_planning_score,
-        "latency": latency_score,
-        "cooling": cooling_score,
-        "price_sensitivity": price_sensitivity_score,
-    }
-
-
-def build_persona_component_scores(
-    project: Dict[str, Any],
-    proximity_scores: Dict[str, float],
-    persona: Optional[str] = None,
-    perspective: str = "demand",
-    user_max_price_mwh: Optional[float] = None,  # NEW parameter
-    shared_component_scores: Optional[Dict[str, float]] = None,
-) -> Dict[str, float]:
-    """
-    Compute 7 component scores matching business criteria.
-
-    Args:
-        project: Project data from database
-        proximity_scores: Infrastructure proximity calculations
-        persona: Persona type (for capacity scoring)
-        perspective: 'demand' (data center) or 'supply' (power developer)
-        user_max_price_mwh: User's max acceptable price for price_sensitivity
-        shared_component_scores: Optional cache of persona-agnostic scores
-
-    Returns:
-        Dictionary with 7 component scores (0-100 each)
-    """
-
-    base_scores = (
-        dict(shared_component_scores)
-        if shared_component_scores is not None
-        else _build_shared_persona_component_scores(
-            project, proximity_scores, perspective, user_max_price_mwh
-        )
-    )
-
-    base_scores["capacity"] = calculate_capacity_component_score(
-        project.get("capacity_mw", 0) or 0,
-        persona,
-    )
-
-    return base_scores
-
-def calculate_persona_weighted_score(
-    project: Dict[str, Any],
-    proximity_scores: Dict[str, float],
-    persona: PersonaType = "hyperscaler",
-    perspective: str = "demand",
-    user_max_price_mwh: Optional[float] = None,  # NEW parameter
-    shared_component_scores: Optional[Dict[str, float]] = None,
+    persona: Optional[PersonaType] = None,
 ) -> Dict[str, Any]:
-    """
-    Calculate persona-based weighted score using 7 business criteria.
+    if persona is not None:
+        return calculate_persona_weighted_score(project, proximity_scores, persona)
 
-    Args:
-        user_max_price_mwh: User's maximum acceptable price (£/MWh)
-    """
-    weights = PERSONA_WEIGHTS[persona]
-
-    # Get 7 component scores
-    component_scores = build_persona_component_scores(
-        project,
-        proximity_scores,
-        persona,
-        perspective,
-        user_max_price_mwh,  # Pass through to price calculation
-        shared_component_scores,
-    )
-
-    # Calculate weighted score using NEW 7 components
-    weighted_score = (
-        component_scores["capacity"] * weights["capacity"]
-        + component_scores["connection_speed"] * weights["connection_speed"]
-        + component_scores["resilience"] * weights["resilience"]
-        + component_scores["land_planning"] * weights["land_planning"]
-        + component_scores["latency"] * weights["latency"]
-        + component_scores["cooling"] * weights["cooling"]
-        + component_scores["price_sensitivity"] * weights["price_sensitivity"]
-    )
-
-    final_internal_score = max(0.0, min(100.0, weighted_score))
-    display_rating = final_internal_score / 10.0
-    color = get_color_from_score(final_internal_score)
-    description = get_rating_description(final_internal_score)
+    base_score = calculate_base_investment_score_renewable(project)
+    infrastructure_bonus = calculate_infrastructure_bonus_renewable(proximity_scores)
+    total_internal_score = min(100.0, base_score + infrastructure_bonus)
+    display_rating = total_internal_score / 10.0
+    color = get_color_from_score(total_internal_score)
+    description = get_rating_description(total_internal_score)
 
     return {
+        "base_investment_score": round(base_score / 10.0, 1),
+        "infrastructure_bonus": round(infrastructure_bonus / 10.0, 1),
         "investment_rating": round(display_rating, 1),
         "rating_description": description,
         "color_code": color,
-        "component_scores": {
-            key: round(value, 1) for key, value in component_scores.items()
-        },
-        "weighted_contributions": {
-            key: round(component_scores[key] * weights.get(key, 0.0), 1)
-            for key in component_scores
-        },
-        "persona": persona,
-        "persona_weights": weights,
-        "internal_total_score": round(final_internal_score, 1),
         "nearest_infrastructure": proximity_scores.get("nearest_distances", {}),
+        "internal_total_score": round(total_internal_score, 1),
+        "scoring_methodology": "Traditional renewable energy scoring (10-100 internal, 1.0-10.0 display)",
     }
 
-def calculate_persona_topsis_score(
-    component_scores: Sequence[Dict[str, float]],
-    weights: Dict[str, float],
-) -> Dict[str, Any]:
-    """Apply TOPSIS using persona weights, supporting positive and negative impacts."""
 
-    if not component_scores:
-        return {
-            "scores": [],
-            "ideal_solution": {},
-            "anti_ideal_solution": {},
-        }
+def calculate_base_investment_score_renewable(project: Dict[str, Any]) -> float:
+    capacity = project.get("capacity_mw", 0) or 0
+    status = str(project.get("development_status_short", "")).lower()
+    tech = str(project.get("technology_type", "")).lower()
+    if capacity >= 200:
+        capacity_score = 30.0
+    elif capacity >= 100:
+        capacity_score = 80.0
+    elif capacity >= 50:
+        capacity_score = 70.0
+    elif capacity >= 25:
+        capacity_score = 90.0
+    elif capacity >= 10:
+        capacity_score = 60.0
+    elif capacity >= 5:
+        capacity_score = 30.0
+    else:
+        capacity_score = 15.0
 
-    component_keys = list(component_scores[0].keys())
-    denominators: Dict[str, float] = {}
-    for key in component_keys:
-        sum_squares = sum((scores.get(key, 0.0) or 0.0) ** 2 for scores in component_scores)
-        denominators[key] = math.sqrt(sum_squares) or 1e-9
+    if "operational" in status:
+        stage_score = 10.0
+    elif "construction" in status:
+        stage_score = 60.0
+    elif "granted" in status:
+        stage_score = 90.0
+    elif "submitted" in status:
+        stage_score = 80.0
+    elif "planning" in status:
+        stage_score = 70.0
+    elif "pre-planning" in status:
+        stage_score = 60.0
+    else:
+        stage_score = 50.0
 
-    weighted_vectors: List[Dict[str, Dict[str, float]]] = []
-    for scores in component_scores:
-        normalized: Dict[str, float] = {}
-        weighted: Dict[str, float] = {}
-        for key in component_keys:
-            raw_value = scores.get(key, 0.0) or 0.0
-            denominator = denominators[key]
-            normalized_value = raw_value / denominator if denominator else 0.0
-            weight = weights.get(key, 0.0)
-            weighted_value = normalized_value * weight
-            normalized[key] = normalized_value
-            weighted[key] = weighted_value
-        weighted_vectors.append(
-            {
-                "normalized_scores": normalized,
-                "weighted_normalized_scores": weighted,
-            }
-        )
+    if "solar" in tech:
+        tech_score = 80.0
+    elif "battery" in tech:
+        tech_score = 85.0
+    elif "wind" in tech:
+        tech_score = 80.0
+    elif "hybrid" in tech:
+        tech_score = 100.0
+    else:
+        tech_score = 70.0
 
-    ideal_solution: Dict[str, float] = {}
-    anti_ideal_solution: Dict[str, float] = {}
-    for key in component_keys:
-        values = [vector["weighted_normalized_scores"][key] for vector in weighted_vectors]
-        ideal_solution[key] = max(values)
-        anti_ideal_solution[key] = min(values)
+    base_score = capacity_score * 0.30 + stage_score * 0.50 + tech_score * 0.20
+    return max(0.0, min(100.0, base_score))
 
-    results: List[Dict[str, Any]] = []
-    for vector in weighted_vectors:
-        weighted = vector["weighted_normalized_scores"]
-        distance_to_ideal = math.sqrt(
-            sum((weighted[key] - ideal_solution[key]) ** 2 for key in component_keys)
-        )
-        distance_to_anti_ideal = math.sqrt(
-            sum((weighted[key] - anti_ideal_solution[key]) ** 2 for key in component_keys)
-        )
-        closeness = 0.0
-        denominator = distance_to_ideal + distance_to_anti_ideal
-        if denominator > 0:
-            closeness = distance_to_anti_ideal / denominator
-        elif distance_to_ideal == 0 and distance_to_anti_ideal == 0:
-            closeness = 1.0
-        results.append(
-            {
-                "normalized_scores": vector["normalized_scores"],
-                "weighted_normalized_scores": weighted,
-                "distance_to_ideal": distance_to_ideal,
-                "distance_to_anti_ideal": distance_to_anti_ideal,
-                "closeness_coefficient": closeness,
-            }
-        )
 
-    return {
-        "scores": results,
-        "ideal_solution": ideal_solution,
-        "anti_ideal_solution": anti_ideal_solution,
-    }
+def calculate_infrastructure_bonus_renewable(proximity_scores: Dict[str, float]) -> float:
+    grid_bonus = 0.0
+    substation_score = proximity_scores.get("substation_score", 0.0)
+    transmission_score = proximity_scores.get("transmission_score", 0.0)
+    if substation_score > 40:
+        grid_bonus += 15.0
+    elif substation_score > 25:
+        grid_bonus += 10.0
+    elif substation_score > 10:
+        grid_bonus += 5.0
+    if transmission_score > 30:
+        grid_bonus += 10.0
+    elif transmission_score > 15:
+        grid_bonus += 5.0
+    grid_bonus = min(25.0, grid_bonus)
 
-def calculate_custom_weighted_score(
+    digital_bonus = 0.0
+    fiber_score = proximity_scores.get("fiber_score", 0.0)
+    ixp_score = proximity_scores.get("ixp_score", 0.0)
+    if fiber_score > 15:
+        digital_bonus += 5.0
+    elif fiber_score > 8:
+        digital_bonus += 3.0
+    if ixp_score > 8:
+        digital_bonus += 5.0
+    elif ixp_score > 4:
+        digital_bonus += 2.0
+    digital_bonus = min(10.0, digital_bonus)
+
+    water_bonus = 0.0
+    water_score = proximity_scores.get("water_score", 0.0)
+    if water_score > 10:
+        water_bonus = 5.0
+    elif water_score > 5:
+        water_bonus = 3.0
+    elif water_score > 2:
+        water_bonus = 1.0
+
+    return grid_bonus + digital_bonus + water_bonus
+
+
+def calculate_enhanced_investment_rating(
     project: Dict[str, Any],
     proximity_scores: Dict[str, float],
-    custom_weights: Dict[str, float],
+    persona: Optional[PersonaType] = None,
 ) -> Dict[str, Any]:
-    capacity_score = calculate_capacity_component_score(project.get("capacity_mw", 0) or 0)
-    stage_score = calculate_development_stage_score(project.get("development_status_short", ""))
-    tech_score = calculate_technology_score(project.get("technology_type", ""))
-    grid_score = calculate_grid_infrastructure_score(proximity_scores)
-    digital_score = calculate_digital_infrastructure_score(proximity_scores)
-    water_score = calculate_water_resources_score(proximity_scores)
-    lcoe_score = calculate_lcoe_score(project.get("development_status_short", ""))
-    tnuos_score = calculate_tnuos_score(project.get("latitude", 0), project.get("longitude", 0))
+    if persona is not None:
+        return calculate_persona_weighted_score(project, proximity_scores, persona)
 
-    weighted_score = (
-        capacity_score * custom_weights.get("capacity", 0.0)
-        + stage_score * custom_weights.get("development_stage", 0.0)
-        + tech_score * custom_weights.get("technology", 0.0)
-        + grid_score * custom_weights.get("grid_infrastructure", 0.0)
-        + digital_score * custom_weights.get("digital_infrastructure", 0.0)
-        + water_score * custom_weights.get("water_resources", 0.0)
-        + lcoe_score * custom_weights.get("lcoe_resource_quality", 0.0)
-        + tnuos_score * custom_weights.get("tnuos_transmission_costs", 0.0)
-    )
-
-    final_internal_score = max(0.0, min(100.0, weighted_score))
-    display_rating = final_internal_score / 10.0
-    color = get_color_from_score(final_internal_score)
-    description = get_rating_description(final_internal_score)
+    base_score = calculate_base_investment_score_renewable(project)
+    infrastructure_bonus = calculate_infrastructure_bonus_renewable(proximity_scores)
+    total_internal_score = min(100.0, base_score + infrastructure_bonus)
+    display_rating = total_internal_score / 10.0
+    color = get_color_from_score(total_internal_score)
+    description = get_rating_description(total_internal_score)
 
     return {
+        "base_investment_score": round(base_score / 10.0, 1),
+        "infrastructure_bonus": round(infrastructure_bonus / 10.0, 1),
         "investment_rating": round(display_rating, 1),
         "rating_description": description,
         "color_code": color,
-        "component_scores": {
-            "capacity": round(capacity_score, 1),
-            "development_stage": round(stage_score, 1),
-            "technology": round(tech_score, 1),
-            "grid_infrastructure": round(grid_score, 1),
-            "digital_infrastructure": round(digital_score, 1),
-            "water_resources": round(water_score, 1),
-            "lcoe_resource_quality": round(lcoe_score, 1),
-        },
-        "weighted_contributions": {
-            "capacity": round(capacity_score * custom_weights.get("capacity", 0.0), 1),
-            "development_stage": round(stage_score * custom_weights.get("development_stage", 0.0), 1),
-            "technology": round(tech_score * custom_weights.get("technology", 0.0), 1),
-            "grid_infrastructure": round(
-                grid_score * custom_weights.get("grid_infrastructure", 0.0),
-                1,
-            ),
-            "digital_infrastructure": round(
-                digital_score * custom_weights.get("digital_infrastructure", 0.0),
-                1,
-            ),
-            "water_resources": round(water_score * custom_weights.get("water_resources", 0.0), 1),
-            "lcoe_resource_quality": round(
-                lcoe_score * custom_weights.get("lcoe_resource_quality", 0.0),
-                1,
-            ),
-        },
-        "persona": "custom",
-        "persona_weights": custom_weights,
-        "internal_total_score": round(final_internal_score, 1),
         "nearest_infrastructure": proximity_scores.get("nearest_distances", {}),
+        "internal_total_score": round(total_internal_score, 1),
+        "scoring_methodology": "Traditional renewable energy scoring (10-100 internal, 1.0-10.0 display)",
     }
 
 def calculate_base_investment_score_renewable(project: Dict[str, Any]) -> float:
@@ -1946,44 +1335,121 @@ def calculate_enhanced_investment_rating(
     }
 
 
-def calculate_best_customer_match(project: Dict[str, Any], proximity_scores: Dict[str, float]) -> Dict[str, Any]:
-    customer_scores: Dict[str, float] = {}
-    shared_scores = _build_shared_persona_component_scores(project, proximity_scores)
-    for persona in ["hyperscaler", "colocation", "edge_computing"]:
-        capacity_mw = project.get("capacity_mw", 0)
-        capacity_range = PERSONA_CAPACITY_RANGES[persona]
-        if capacity_range["min"] <= capacity_mw <= capacity_range["max"]:
-            scoring_result = calculate_persona_weighted_score(
-                project,
-                proximity_scores,
-                persona,  # type: ignore[arg-type]
-                shared_component_scores=shared_scores,
-            )
-            customer_scores[persona] = scoring_result["investment_rating"]
-        else:
-            customer_scores[persona] = 2.0
+def calculate_base_investment_score_renewable(project: Dict[str, Any]) -> float:
+    capacity = project.get("capacity_mw", 0) or 0
+    status = str(project.get("development_status_short", "")).lower()
+    tech = str(project.get("technology_type", "")).lower()
+    if capacity >= 200:
+        capacity_score = 30.0
+    elif capacity >= 100:
+        capacity_score = 80.0
+    elif capacity >= 50:
+        capacity_score = 70.0
+    elif capacity >= 25:
+        capacity_score = 90.0
+    elif capacity >= 10:
+        capacity_score = 60.0
+    elif capacity >= 5:
+        capacity_score = 30.0
+    else:
+        capacity_score = 15.0
 
-    best_customer = max(customer_scores.keys(), key=lambda key: customer_scores[key])
-    best_score = customer_scores[best_customer]
+    if "operational" in status:
+        stage_score = 10.0
+    elif "construction" in status:
+        stage_score = 60.0
+    elif "granted" in status:
+        stage_score = 90.0
+    elif "submitted" in status:
+        stage_score = 80.0
+    elif "planning" in status:
+        stage_score = 70.0
+    elif "pre-planning" in status:
+        stage_score = 60.0
+    else:
+        stage_score = 50.0
+
+    if "solar" in tech:
+        tech_score = 80.0
+    elif "battery" in tech:
+        tech_score = 85.0
+    elif "wind" in tech:
+        tech_score = 80.0
+    elif "hybrid" in tech:
+        tech_score = 100.0
+    else:
+        tech_score = 70.0
+
+    base_score = capacity_score * 0.30 + stage_score * 0.50 + tech_score * 0.20
+    return max(0.0, min(100.0, base_score))
+
+
+def calculate_infrastructure_bonus_renewable(proximity_scores: Dict[str, float]) -> float:
+    grid_bonus = 0.0
+    substation_score = proximity_scores.get("substation_score", 0.0)
+    transmission_score = proximity_scores.get("transmission_score", 0.0)
+    if substation_score > 40:
+        grid_bonus += 15.0
+    elif substation_score > 25:
+        grid_bonus += 10.0
+    elif substation_score > 10:
+        grid_bonus += 5.0
+    if transmission_score > 30:
+        grid_bonus += 10.0
+    elif transmission_score > 15:
+        grid_bonus += 5.0
+    grid_bonus = min(25.0, grid_bonus)
+
+    digital_bonus = 0.0
+    fiber_score = proximity_scores.get("fiber_score", 0.0)
+    ixp_score = proximity_scores.get("ixp_score", 0.0)
+    if fiber_score > 15:
+        digital_bonus += 5.0
+    elif fiber_score > 8:
+        digital_bonus += 3.0
+    if ixp_score > 8:
+        digital_bonus += 5.0
+    elif ixp_score > 4:
+        digital_bonus += 2.0
+    digital_bonus = min(10.0, digital_bonus)
+
+    water_bonus = 0.0
+    water_score = proximity_scores.get("water_score", 0.0)
+    if water_score > 10:
+        water_bonus = 5.0
+    elif water_score > 5:
+        water_bonus = 3.0
+    elif water_score > 2:
+        water_bonus = 1.0
+
+    return grid_bonus + digital_bonus + water_bonus
+
+
+def calculate_enhanced_investment_rating(
+    project: Dict[str, Any],
+    proximity_scores: Dict[str, float],
+    persona: Optional[PersonaType] = None,
+) -> Dict[str, Any]:
+    if persona is not None:
+        return calculate_persona_weighted_score(project, proximity_scores, persona)
+
+    base_score = calculate_base_investment_score_renewable(project)
+    infrastructure_bonus = calculate_infrastructure_bonus_renewable(proximity_scores)
+    total_internal_score = min(100.0, base_score + infrastructure_bonus)
+    display_rating = total_internal_score / 10.0
+    color = get_color_from_score(total_internal_score)
+    description = get_rating_description(total_internal_score)
 
     return {
-        "best_customer_match": best_customer,
-        "customer_match_scores": customer_scores,
-        "best_match_score": round(best_score, 1),
-        "capacity_mw": project.get("capacity_mw", 0),
-        "suitable_customers": [persona for persona, score in customer_scores.items() if score >= 6.0],
+        "base_investment_score": round(base_score / 10.0, 1),
+        "infrastructure_bonus": round(infrastructure_bonus / 10.0, 1),
+        "investment_rating": round(display_rating, 1),
+        "rating_description": description,
+        "color_code": color,
+        "nearest_infrastructure": proximity_scores.get("nearest_distances", {}),
+        "internal_total_score": round(total_internal_score, 1),
+        "scoring_methodology": "Traditional renewable energy scoring (10-100 internal, 1.0-10.0 display)",
     }
-
-
-def filter_projects_by_persona_capacity(projects: List[Dict[str, Any]], persona: PersonaType) -> List[Dict[str, Any]]:
-    capacity_range = PERSONA_CAPACITY_RANGES[persona]
-    filtered = []
-    for project in projects:
-        capacity_mw = project.get("capacity_mw", 0)
-        if capacity_range["min"] <= capacity_mw <= capacity_range["max"]:
-            filtered.append(project)
-    return filtered
-
 
 async def calculate_proximity_scores_batch(projects: List[Dict[str, Any]]) -> List[Dict[str, float]]:
     if not projects:
