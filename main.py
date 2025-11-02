@@ -96,6 +96,92 @@ PERSONA_WEIGHTS: Dict[str, Dict[str, float]] = {
     },
 }
 
+PERSONA_TARGET_COMPONENTS: Dict[str, Dict[str, float]] = {
+    "hyperscaler": {
+        "capacity": 0.92,
+        "connection_speed": 0.78,
+        "resilience": 0.82,
+        "land_planning": 0.8,
+        "latency": 0.65,
+        "cooling": 0.88,
+        "price_sensitivity": 0.55,
+    },
+    "colocation": {
+        "capacity": 0.7,
+        "connection_speed": 0.82,
+        "resilience": 0.86,
+        "land_planning": 0.78,
+        "latency": 0.9,
+        "cooling": 0.68,
+        "price_sensitivity": 0.6,
+    },
+    "edge_computing": {
+        "capacity": 0.55,
+        "connection_speed": 0.75,
+        "resilience": 0.7,
+        "land_planning": 0.9,
+        "latency": 0.92,
+        "cooling": 0.5,
+        "price_sensitivity": 0.68,
+    },
+    "default": {
+        "capacity": 0.75,
+        "connection_speed": 0.75,
+        "resilience": 0.75,
+        "land_planning": 0.75,
+        "latency": 0.75,
+        "cooling": 0.75,
+        "price_sensitivity": 0.75,
+    },
+}
+
+PERSONA_SCORING_TUNING: Dict[str, Dict[str, float]] = {
+    "hyperscaler": {
+        "alpha": 1.15,
+        "beta": 0.85,
+        "evidence_floor": 0.08,
+        "logistic_midpoint": 0.58,
+        "logistic_steepness": 7.5,
+        "evidence_shift": 0.35,
+        "sum_weight": 0.5,
+        "product_weight": 0.25,
+        "alignment_weight": 0.25,
+    },
+    "colocation": {
+        "alpha": 1.1,
+        "beta": 0.9,
+        "evidence_floor": 0.07,
+        "logistic_midpoint": 0.55,
+        "logistic_steepness": 7.0,
+        "evidence_shift": 0.3,
+        "sum_weight": 0.45,
+        "product_weight": 0.3,
+        "alignment_weight": 0.25,
+    },
+    "edge_computing": {
+        "alpha": 1.05,
+        "beta": 0.95,
+        "evidence_floor": 0.06,
+        "logistic_midpoint": 0.6,
+        "logistic_steepness": 8.0,
+        "evidence_shift": 0.4,
+        "sum_weight": 0.4,
+        "product_weight": 0.28,
+        "alignment_weight": 0.32,
+    },
+    "default": {
+        "alpha": 1.1,
+        "beta": 0.9,
+        "evidence_floor": 0.07,
+        "logistic_midpoint": 0.57,
+        "logistic_steepness": 7.0,
+        "evidence_shift": 0.33,
+        "sum_weight": 0.45,
+        "product_weight": 0.28,
+        "alignment_weight": 0.27,
+    },
+}
+
 PERSONA_CAPACITY_RANGES = {
     "edge_computing": {"min": 0.4, "max": 5},
     "colocation": {"min": 5, "max": 30},
@@ -1627,6 +1713,80 @@ def build_persona_component_scores(
 
     return base_scores
 
+
+def _normalize_component_scores(component_scores: Dict[str, float]) -> Dict[str, float]:
+    """Normalize component scores to the unit interval."""
+
+    normalized: Dict[str, float] = {}
+    for key, value in component_scores.items():
+        normalized[key] = max(0.0, min(1.0, value / 100.0))
+    return normalized
+
+
+def _get_persona_tuning(persona: PersonaType) -> Dict[str, float]:
+    return PERSONA_SCORING_TUNING.get(persona, PERSONA_SCORING_TUNING["default"])
+
+
+def _compute_posterior_persona_weights(
+    persona: PersonaType,
+    base_weights: Dict[str, float],
+    normalized_scores: Dict[str, float],
+) -> Tuple[Dict[str, float], float]:
+    r"""Apply a Dirichlet-style Bayesian update to persona weights.
+
+    The posterior weight for each component :math:`k` follows the simple
+    proportionality
+
+    .. math::
+
+        w'_k \propto (w_k)^{\alpha} \cdot (s_k)^{\beta}
+
+    where ``w_k`` is the baseline weight, ``s_k`` is the normalized score, and the
+    persona-specific tuning parameters :math:`\alpha, \beta` control how much the
+    evidence ``s_k`` can reinforce or diminish the baseline view.
+    """
+
+    tuning = _get_persona_tuning(persona)
+    alpha = tuning["alpha"]
+    beta = tuning["beta"]
+    evidence_floor = tuning["evidence_floor"]
+
+    posterior: Dict[str, float] = {}
+    for key, weight in base_weights.items():
+        evidence = max(normalized_scores.get(key, 0.0), evidence_floor)
+        posterior[key] = (weight ** alpha) * (evidence ** beta)
+
+    total = sum(posterior.values()) or 1e-9
+    for key in posterior:
+        posterior[key] /= total
+
+    evidence_strength = sum(
+        posterior[key] * normalized_scores.get(key, 0.0) for key in posterior
+    )
+    return posterior, evidence_strength
+
+
+def _calculate_target_alignment(
+    persona: PersonaType,
+    normalized_scores: Dict[str, float],
+    posterior_weights: Dict[str, float],
+) -> float:
+    """Measure alignment with persona-specific ideal component targets."""
+
+    targets = PERSONA_TARGET_COMPONENTS.get(persona, PERSONA_TARGET_COMPONENTS["default"])
+    alignment = 0.0
+    for key, weight in posterior_weights.items():
+        target = targets.get(key, 0.75)
+        alignment += weight * (1.0 - abs(normalized_scores.get(key, 0.0) - target))
+    return max(0.0, min(1.0, alignment))
+
+
+def _logistic_transform(value: float, midpoint: float, steepness: float) -> float:
+    """Stable logistic transform to map [0,1] input to [0,1]."""
+
+    return 1.0 / (1.0 + math.exp(-steepness * (value - midpoint)))
+
+
 def calculate_persona_weighted_score(
     project: Dict[str, Any],
     proximity_scores: Dict[str, float],
@@ -1635,13 +1795,23 @@ def calculate_persona_weighted_score(
     user_max_price_mwh: Optional[float] = None,  # NEW parameter
     shared_component_scores: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
-    """
-    Calculate persona-based weighted score using 7 business criteria.
+    r"""Calculate the persona score with explicit fusion equations.
+
+    Pipeline overview (all values are clamped to ``[0, 1]`` where needed):
+
+    1. Component normalization: ``s_k = component_score_k / 100``.
+    2. Posterior weights: ``w'_k = (w_k^α * s_k^β) / Σ_j (w_j^α * s_j^β)``.
+    3. Blended evidence strength: ``E = Σ_k (w'_k * s_k)``.
+    4. Fusion score: ``F = a * Σ_k (w'_k * s_k) + b * Π_k s_k^{w'_k} + c * alignment``
+       where ``alignment = Σ_k w'_k * (1 - |s_k - target_k|)``.
+    5. Calibrated rating: ``score = σ(F; m - δ, γ)`` with logistic curve
+       ``σ(x; m, γ) = 1 / (1 + exp(-γ * (x - m)))`` and midpoint shift
+       ``δ = (E - m) * shift``.
 
     Args:
         user_max_price_mwh: User's maximum acceptable price (£/MWh)
     """
-    weights = PERSONA_WEIGHTS[persona]
+    baseline_weights = PERSONA_WEIGHTS[persona]
 
     # Get 7 component scores
     component_scores = build_persona_component_scores(
@@ -1653,21 +1823,52 @@ def calculate_persona_weighted_score(
         shared_component_scores,
     )
 
-    # Calculate weighted score using NEW 7 components
-    weighted_score = (
-        component_scores["capacity"] * weights["capacity"]
-        + component_scores["connection_speed"] * weights["connection_speed"]
-        + component_scores["resilience"] * weights["resilience"]
-        + component_scores["land_planning"] * weights["land_planning"]
-        + component_scores["latency"] * weights["latency"]
-        + component_scores["cooling"] * weights["cooling"]
-        + component_scores["price_sensitivity"] * weights["price_sensitivity"]
+    normalized_scores = _normalize_component_scores(component_scores)
+    posterior_weights, evidence_strength = _compute_posterior_persona_weights(
+        persona, baseline_weights, normalized_scores
+    )
+    target_alignment = _calculate_target_alignment(
+        persona, normalized_scores, posterior_weights
     )
 
-    final_internal_score = max(0.0, min(100.0, weighted_score))
+    tuning = _get_persona_tuning(persona)
+    weighted_sum = sum(
+        normalized_scores[key] * posterior_weights.get(key, 0.0)
+        for key in normalized_scores
+    )
+    weighted_product = math.exp(
+        sum(
+            posterior_weights.get(key, 0.0)
+            * math.log(max(normalized_scores.get(key, 0.0), 1e-9))
+            for key in normalized_scores
+        )
+    )
+
+    fusion_score = (
+        tuning["sum_weight"] * weighted_sum
+        + tuning["product_weight"] * weighted_product
+        + tuning["alignment_weight"] * target_alignment
+    )
+
+    evidence_adjustment = (
+        evidence_strength - tuning["logistic_midpoint"]
+    ) * tuning["evidence_shift"]
+    effective_midpoint = tuning["logistic_midpoint"] - evidence_adjustment
+    logistic_value = _logistic_transform(
+        max(0.0, min(1.0, fusion_score)),
+        max(0.05, min(0.95, effective_midpoint)),
+        tuning["logistic_steepness"],
+    )
+
+    final_internal_score = max(0.0, min(100.0, logistic_value * 100.0))
     display_rating = final_internal_score / 10.0
     color = get_color_from_score(final_internal_score)
     description = get_rating_description(final_internal_score)
+
+    weighted_contributions = {
+        key: round(component_scores[key] * posterior_weights.get(key, 0.0), 1)
+        for key in component_scores
+    }
 
     return {
         "investment_rating": round(display_rating, 1),
@@ -1676,14 +1877,23 @@ def calculate_persona_weighted_score(
         "component_scores": {
             key: round(value, 1) for key, value in component_scores.items()
         },
-        "weighted_contributions": {
-            key: round(component_scores[key] * weights.get(key, 0.0), 1)
-            for key in component_scores
-        },
+        "weighted_contributions": weighted_contributions,
         "persona": persona,
-        "persona_weights": weights,
+        "persona_weights": baseline_weights,
+        "posterior_persona_weights": {
+            key: round(value, 4) for key, value in posterior_weights.items()
+        },
         "internal_total_score": round(final_internal_score, 1),
         "nearest_infrastructure": proximity_scores.get("nearest_distances", {}),
+        "scoring_metadata": {
+            "normalized_scores": normalized_scores,
+            "weighted_sum": weighted_sum,
+            "weighted_product": weighted_product,
+            "target_alignment": target_alignment,
+            "evidence_strength": evidence_strength,
+            "fusion_score": fusion_score,
+            "effective_midpoint": effective_midpoint,
+        },
     }
 
 def calculate_persona_topsis_score(
