@@ -2711,6 +2711,20 @@ async def get_enhanced_geojson(
         topsis_anti_ideal_solution = topsis_output.get("anti_ideal_solution", {}) if topsis_output else {}
 
     features: List[Dict[str, Any]] = []
+    persona_suggestion: Optional[str] = None
+    persona_suggestion_source: Optional[str] = None
+    best_match_tracker: Optional[Tuple[str, float]] = None
+
+    if persona:
+        persona_suggestion = persona
+        persona_suggestion_source = "persona_parameter"
+    elif parsed_custom_weights:
+        persona_suggestion = "custom"
+        persona_suggestion_source = "custom_weights"
+    elif use_topsis and topsis_persona_label:
+        persona_suggestion = topsis_persona_label
+        persona_suggestion_source = "topsis_reference"
+
     for index, project in enumerate(valid_projects):
         try:
             proximity_scores = get_proximity_scores_for_index(index)
@@ -2831,6 +2845,13 @@ async def get_enhanced_geojson(
                     "properties": properties,
                 }
             )
+            if persona_suggestion is None:
+                match_summary = calculate_best_customer_match(project, proximity_scores)
+                best_persona = match_summary.get("best_customer_match")
+                best_score = match_summary.get("best_match_score")
+                if isinstance(best_persona, str) and isinstance(best_score, (int, float)):
+                    if not best_match_tracker or best_score > best_match_tracker[1]:
+                        best_match_tracker = (best_persona, best_score)
         except Exception as exc:  # pragma: no cover - per-project failure fallback
             print(f"❌ Error processing project {index + 1}: {exc}")
             features.append(
@@ -2908,11 +2929,21 @@ async def get_enhanced_geojson(
     else:
         print(f"🎯 RENEWABLE ENERGY SCORING COMPLETE: {len(features)} features in {processing_time:.2f}s")
 
+    if persona_suggestion is None and best_match_tracker:
+        persona_suggestion = best_match_tracker[0]
+        persona_suggestion_source = "best_customer_match"
+
+    if persona_suggestion is None:
+        persona_suggestion = "renewable_energy"
+        persona_suggestion_source = "default_suggestion"
+
     # Build metadata
     metadata: Dict[str, Any] = {
         "scoring_system": f"{scoring_mode} - 1.0-10.0 display scale",
         "scoring_method": active_scoring_method,
         "persona": persona,
+        "persona_suggestion": persona_suggestion,
+        "persona_suggestion_source": persona_suggestion_source,
         "processing_time_seconds": round(processing_time, 2),
         "projects_processed": len(features),
         "algorithm_version": "2.1 - Persona-Based Infrastructure Scoring",
@@ -3546,6 +3577,7 @@ async def analyze_for_power_developer(
                 },
                 "project_type": target_persona,
                 "project_type_weights": weights,
+                "persona_suggestion": target_persona,
                 "internal_total_score": round(weighted_score, 1),
                 "nearest_infrastructure": proximity_scores.get("nearest_distances", {}),
             }
@@ -3589,6 +3621,13 @@ async def analyze_for_power_developer(
             f"Rating {top.get('investment_rating')}/10 • {top.get('capacity_mw')}MW"
         )
 
+    if persona_resolution == "valid":
+        persona_suggestion_source = "user_requested_project_type"
+    elif persona_resolution == "defaulted":
+        persona_suggestion_source = "default_project_type"
+    else:
+        persona_suggestion_source = "invalid_project_type_fallback"
+
     return {
         "type": "FeatureCollection",
         "features": features_sorted,
@@ -3598,6 +3637,8 @@ async def analyze_for_power_developer(
             "project_type_weights": weights,
             "requested_project_type": requested_persona or None,
             "project_type_resolution": persona_resolution,
+            "personaSuggestion": target_persona,
+            "personaSuggestionSource": persona_suggestion_source,
             "source_table": source_table,
             "total_projects_processed": len(raw_rows),
             "projects_with_valid_coords": len(valid_projects),
