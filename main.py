@@ -457,7 +457,7 @@ async def enrich_and_rescore_top_25_with_tnuos(
     features: List[Dict[str, Any]],
     persona: Optional[PersonaType] = None,
 ) -> List[Dict[str, Any]]:
-    """Enrich top 25 projects with TNUoS data and adjust scores."""
+    """Enrich projects with TNUoS data and adjust scores."""
 
     if not features:
         return features
@@ -468,14 +468,11 @@ async def enrich_and_rescore_top_25_with_tnuos(
         reverse=True,
     )
 
-    top_25 = features_sorted[:25]
-    remaining = features_sorted[25:]
-
-    print("📊 Enriching top 25 projects with TNUoS zones...")
+    print("📊 Enriching projects with TNUoS zones...")
 
     enriched_count = 0
 
-    for feature in top_25:
+    for feature in features_sorted:
         properties = feature.setdefault("properties", {})
 
         try:
@@ -554,18 +551,15 @@ async def enrich_and_rescore_top_25_with_tnuos(
             print(f"⚠️  Error processing project: {exc}")
             properties["tnuos_enriched"] = False
 
-    print(f"✓ Enriched {enriched_count}/{len(top_25)} projects")
+    print(f"✓ Enriched {enriched_count}/{len(features_sorted)} projects")
 
-    for feature in remaining:
-        feature.setdefault("properties", {})["tnuos_enriched"] = False
-
-    resorted_top_25 = sorted(
-        top_25,
+    resorted_features = sorted(
+        features_sorted,
         key=lambda feature: feature.get("properties", {}).get("investment_rating", 0),
         reverse=True,
     )
 
-    return resorted_top_25 + remaining
+    return resorted_features
 
 
 class UserSite(BaseModel):
