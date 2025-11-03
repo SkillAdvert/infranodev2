@@ -453,7 +453,7 @@ def calculate_tnuos_score_from_tariff(tariff: float) -> float:
     return 100.0 * (1.0 - normalized)
 
 
-async def enrich_and_rescore_top_25_with_tnuos(
+async def enrich_and_rescore_with_tnuos(
     features: List[Dict[str, Any]],
     persona: Optional[PersonaType] = None,
 ) -> List[Dict[str, Any]]:
