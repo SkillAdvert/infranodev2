@@ -525,7 +525,7 @@ async def enrich_and_rescore_top_25_with_tnuos(
             )
 
             weighted_score = max(0.0, min(100.0, weighted_score))
-            new_rating = round(weighted_score / 10.0, 1)
+            new_rating = round(weighted_score, 1)
 
             properties["component_scores"] = {
                 key: round(value, 1) for key, value in component_scores.items()
@@ -543,7 +543,7 @@ async def enrich_and_rescore_top_25_with_tnuos(
             properties["tnuos_enriched"] = True
             properties["rating_change"] = round(new_rating - old_rating, 1)
 
-            if abs(new_rating - old_rating) > 0.2:
+            if abs(new_rating - old_rating) > 2.0:
                 site_name = properties.get("site_name", "Project")
                 print(
                     f"  • {site_name}: {old_rating:.1f} → {new_rating:.1f} ({zone['zone_name']})"
@@ -1172,47 +1172,45 @@ def _distance_to_line_feature(feature: LineFeature, lat: float, lon: float) -> f
     return best if best != float("inf") else 9999.0
 
 def get_color_from_score(score_out_of_100: float) -> str:
-    display_score = score_out_of_100 / 10.0
-    if display_score >= 9.0:
+    if score_out_of_100 >= 90.0:
         return "#00DD00"
-    if display_score >= 8.0:
+    if score_out_of_100 >= 80.0:
         return "#33FF33"
-    if display_score >= 7.0:
+    if score_out_of_100 >= 70.0:
         return "#7FFF00"
-    if display_score >= 6.0:
+    if score_out_of_100 >= 60.0:
         return "#CCFF00"
-    if display_score >= 5.0:
+    if score_out_of_100 >= 50.0:
         return "#FFFF00"
-    if display_score >= 4.0:
+    if score_out_of_100 >= 40.0:
         return "#FFCC00"
-    if display_score >= 3.0:
+    if score_out_of_100 >= 30.0:
         return "#FF9900"
-    if display_score >= 2.0:
+    if score_out_of_100 >= 20.0:
         return "#FF6600"
-    if display_score >= 1.0:
+    if score_out_of_100 >= 10.0:
         return "#FF3300"
     return "#CC0000"
 
 
 def get_rating_description(score_out_of_100: float) -> str:
-    display_score = score_out_of_100 / 10.0
-    if display_score >= 9.0:
+    if score_out_of_100 >= 90.0:
         return "Excellent"
-    if display_score >= 8.0:
+    if score_out_of_100 >= 80.0:
         return "Very Good"
-    if display_score >= 7.0:
+    if score_out_of_100 >= 70.0:
         return "Good"
-    if display_score >= 6.0:
+    if score_out_of_100 >= 60.0:
         return "Above Average"
-    if display_score >= 5.0:
+    if score_out_of_100 >= 50.0:
         return "Average"
-    if display_score >= 4.0:
+    if score_out_of_100 >= 40.0:
         return "Below Average"
-    if display_score >= 3.0:
+    if score_out_of_100 >= 30.0:
         return "Poor"
-    if display_score >= 2.0:
+    if score_out_of_100 >= 20.0:
         return "Very Poor"
-    if display_score >= 1.0:
+    if score_out_of_100 >= 10.0:
         return "Bad"
     return "Very Bad"
 
@@ -1861,7 +1859,7 @@ def calculate_persona_weighted_score(
     )
 
     final_internal_score = max(0.0, min(100.0, logistic_value * 100.0))
-    display_rating = final_internal_score / 10.0
+    rounded_internal_score = round(final_internal_score, 1)
     color = get_color_from_score(final_internal_score)
     description = get_rating_description(final_internal_score)
 
@@ -1871,7 +1869,7 @@ def calculate_persona_weighted_score(
     }
 
     return {
-        "investment_rating": round(display_rating, 1),
+        "investment_rating": rounded_internal_score,
         "rating_description": description,
         "color_code": color,
         "component_scores": {
@@ -1883,7 +1881,7 @@ def calculate_persona_weighted_score(
         "posterior_persona_weights": {
             key: round(value, 4) for key, value in posterior_weights.items()
         },
-        "internal_total_score": round(final_internal_score, 1),
+        "internal_total_score": rounded_internal_score,
         "nearest_infrastructure": proximity_scores.get("nearest_distances", {}),
         "scoring_metadata": {
             "normalized_scores": normalized_scores,
@@ -1998,12 +1996,12 @@ def calculate_custom_weighted_score(
     )
 
     final_internal_score = max(0.0, min(100.0, weighted_score))
-    display_rating = final_internal_score / 10.0
+    rounded_internal_score = round(final_internal_score, 1)
     color = get_color_from_score(final_internal_score)
     description = get_rating_description(final_internal_score)
 
     return {
-        "investment_rating": round(display_rating, 1),
+        "investment_rating": rounded_internal_score,
         "rating_description": description,
         "color_code": color,
         "component_scores": {
@@ -2035,7 +2033,7 @@ def calculate_custom_weighted_score(
         },
         "persona": "custom",
         "persona_weights": custom_weights,
-        "internal_total_score": round(final_internal_score, 1),
+        "internal_total_score": rounded_internal_score,
         "nearest_infrastructure": proximity_scores.get("nearest_distances", {}),
     }
 
@@ -2140,19 +2138,19 @@ def calculate_enhanced_investment_rating(
     base_score = calculate_base_investment_score_renewable(project)
     infrastructure_bonus = calculate_infrastructure_bonus_renewable(proximity_scores)
     total_internal_score = min(100.0, base_score + infrastructure_bonus)
-    display_rating = total_internal_score / 10.0
+    rounded_total_score = round(total_internal_score, 1)
     color = get_color_from_score(total_internal_score)
     description = get_rating_description(total_internal_score)
 
     return {
-        "base_investment_score": round(base_score / 10.0, 1),
-        "infrastructure_bonus": round(infrastructure_bonus / 10.0, 1),
-        "investment_rating": round(display_rating, 1),
+        "base_investment_score": round(base_score, 1),
+        "infrastructure_bonus": round(infrastructure_bonus, 1),
+        "investment_rating": rounded_total_score,
         "rating_description": description,
         "color_code": color,
         "nearest_infrastructure": proximity_scores.get("nearest_distances", {}),
-        "internal_total_score": round(total_internal_score, 1),
-        "scoring_methodology": "Traditional renewable energy scoring (10-100 internal, 1.0-10.0 display)",
+        "internal_total_score": rounded_total_score,
+        "scoring_methodology": "Traditional renewable energy scoring (0-100 scale)",
     }
 
 
@@ -2171,7 +2169,7 @@ def calculate_best_customer_match(project: Dict[str, Any], proximity_scores: Dic
             )
             customer_scores[persona] = scoring_result["investment_rating"]
         else:
-            customer_scores[persona] = 2.0
+            customer_scores[persona] = 20.0
 
     best_customer = max(customer_scores.keys(), key=lambda key: customer_scores[key])
     best_score = customer_scores[best_customer]
@@ -2181,7 +2179,7 @@ def calculate_best_customer_match(project: Dict[str, Any], proximity_scores: Dic
         "customer_match_scores": customer_scores,
         "best_match_score": round(best_score, 1),
         "capacity_mw": project.get("capacity_mw", 0),
-        "suitable_customers": [persona for persona, score in customer_scores.items() if score >= 6.0],
+        "suitable_customers": [persona for persona, score in customer_scores.items() if score >= 60.0],
     }
 
 
@@ -2319,21 +2317,21 @@ def calculate_rating_distribution(features: List[Dict[str, Any]]) -> Dict[str, i
     }
     for feature in features:
         rating = feature.get("properties", {}).get("investment_rating", 0)
-        if rating >= 9.0:
+        if rating >= 90.0:
             distribution["excellent"] += 1
-        elif rating >= 8.0:
+        elif rating >= 80.0:
             distribution["very_good"] += 1
-        elif rating >= 7.0:
+        elif rating >= 70.0:
             distribution["good"] += 1
-        elif rating >= 6.0:
+        elif rating >= 60.0:
             distribution["above_average"] += 1
-        elif rating >= 5.0:
+        elif rating >= 50.0:
             distribution["average"] += 1
-        elif rating >= 4.0:
+        elif rating >= 40.0:
             distribution["below_average"] += 1
-        elif rating >= 3.0:
+        elif rating >= 30.0:
             distribution["poor"] += 1
-        elif rating >= 2.0:
+        elif rating >= 20.0:
             distribution["very_poor"] += 1
         else:
             distribution["bad"] += 1
@@ -2542,20 +2540,20 @@ async def score_user_sites(
     return {
         "sites": scored_sites,
         "metadata": {
-            "scoring_system": f"{scoring_mode} - 1.0-10.0 Investment Rating Scale",
+            "scoring_system": f"{scoring_mode} - 0-100 Investment Rating Scale",
             "persona": persona,
             "processing_time_seconds": round(processing_time, 2),
             "algorithm_version": "2.1 - Persona-Based Infrastructure Proximity Enhanced",
             "rating_scale": {
-                "9.0-10.0": "Excellent - Premium investment opportunity",
-                "8.0-8.9": "Very Good - Strong investment potential",
-                "7.0-7.9": "Good - Solid investment opportunity",
-                "6.0-6.9": "Above Average - Moderate investment potential",
-                "5.0-5.9": "Average - Standard investment opportunity",
-                "4.0-4.9": "Below Average - Limited investment appeal",
-                "3.0-3.9": "Poor - Significant investment challenges",
-                "2.0-2.9": "Very Poor - High risk investment",
-                "1.0-1.9": "Bad - Unfavorable investment conditions",
+                "90-100": "Excellent - Premium investment opportunity",
+                "80-89": "Very Good - Strong investment potential",
+                "70-79": "Good - Solid investment opportunity",
+                "60-69": "Above Average - Moderate investment potential",
+                "50-59": "Average - Standard investment opportunity",
+                "40-49": "Below Average - Limited investment appeal",
+                "30-39": "Poor - Significant investment challenges",
+                "20-29": "Very Poor - High risk investment",
+                "10-19": "Bad - Unfavorable investment conditions",
             },
         },
     }
@@ -2745,7 +2743,7 @@ async def get_enhanced_geojson(
                     # Use TOPSIS results
                     closeness = topsis_info.get("closeness_coefficient", 0.0)
                     internal_total_score = 10.0 + closeness * 90.0
-                    display_rating = round(internal_total_score / 10.0, 1)
+                    display_rating = round(internal_total_score, 1)
                     color = get_color_from_score(internal_total_score)
                     description = get_rating_description(internal_total_score)
                     
@@ -2774,7 +2772,7 @@ async def get_enhanced_geojson(
                             "weighted_normalized_scores": topsis_info.get("weighted_normalized_scores"),
                             "normalized_scores": topsis_info.get("normalized_scores"),
                         },
-                        "scoring_methodology": "Persona TOPSIS scoring (closeness scaled to 1-10)",
+                        "scoring_methodology": "Persona TOPSIS scoring (closeness scaled to 10-100)",
                     }
             else:
                 # Traditional weighted sum scoring
@@ -2848,7 +2846,7 @@ async def get_enhanced_geojson(
                         "capacity_mw": project.get("capacity_mw"),
                         "county": project.get("county"),
                         "country": project.get("country"),
-                        "investment_rating": 5.0,
+                        "investment_rating": 50.0,
                         "rating_description": "Average",
                         "color_code": "#FFFF00",
                         "nearest_infrastructure": {},
@@ -2910,7 +2908,7 @@ async def get_enhanced_geojson(
 
     # Build metadata
     metadata: Dict[str, Any] = {
-        "scoring_system": f"{scoring_mode} - 1.0-10.0 display scale",
+        "scoring_system": f"{scoring_mode} - 0-100 display scale",
         "scoring_method": active_scoring_method,
         "persona": persona,
         "processing_time_seconds": round(processing_time, 2),
@@ -2919,12 +2917,12 @@ async def get_enhanced_geojson(
         "performance_optimization": "Cached infrastructure + batch proximity scoring",
         "rating_distribution": calculate_rating_distribution(features),
         "rating_scale_guide": {
-            "excellent": "9.0-10.0",
-            "very_good": "8.0-8.9",
-            "good": "7.0-7.9",
-            "above_average": "6.0-6.9",
-            "average": "5.0-5.9",
-            "below_average": "4.0-4.9",
+            "excellent": "90-100",
+            "very_good": "80-89",
+            "good": "70-79",
+            "above_average": "60-69",
+            "average": "50-59",
+            "below_average": "40-49",
         },
     }
 
@@ -3520,8 +3518,8 @@ async def analyze_for_power_developer(
 
             weighted_score = max(0.0, min(100.0, weighted_score))
 
-            # STEP 5C: Convert to display format (0-10 scale)
-            display_rating = round(weighted_score / 10.0, 1)
+            # STEP 5C: Convert to display format (0-100 scale)
+            display_rating = round(weighted_score, 1)
             color_code = get_color_from_score(weighted_score)
             rating_description = get_rating_description(weighted_score)
 
@@ -3546,7 +3544,7 @@ async def analyze_for_power_developer(
                 },
                 "project_type": target_persona,
                 "project_type_weights": weights,
-                "internal_total_score": round(weighted_score, 1),
+                "internal_total_score": display_rating,
                 "nearest_infrastructure": proximity_scores.get("nearest_distances", {}),
             }
 
@@ -3586,7 +3584,7 @@ async def analyze_for_power_developer(
         top = features_sorted[0]["properties"]
         print(
             f"   🏆 Top project: {top.get('project_name')} - "
-            f"Rating {top.get('investment_rating')}/10 • {top.get('capacity_mw')}MW"
+            f"Rating {top.get('investment_rating')}/100 • {top.get('capacity_mw')}MW"
         )
 
     return {
@@ -3605,11 +3603,11 @@ async def analyze_for_power_developer(
             "processing_time_seconds": round(processing_time, 2),
             "algorithm_version": "2.2 - Power Developer Workflow",
             "rating_scale": {
-                "9.0-10.0": "Excellent",
-                "8.0-8.9": "Very Good",
-                "7.0-7.9": "Good",
-                "6.0-6.9": "Above Average",
-                "5.0-5.9": "Average",
+                "90-100": "Excellent",
+                "80-89": "Very Good",
+                "70-79": "Good",
+                "60-69": "Above Average",
+                "50-59": "Average",
             },
         },
     }
