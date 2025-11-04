@@ -2604,12 +2604,45 @@ async def get_enhanced_geojson(
     start_time = time.time()
     parsed_custom_weights = None
     if custom_weights:
+        print(f"[CriteriaModal] Raw custom weights payload: {custom_weights}")
         try:
             parsed_custom_weights = json.loads(custom_weights)
-            total = sum(parsed_custom_weights.values())
-            if total and abs(total - 1.0) > 0.01:
-                parsed_custom_weights = {key: value / total for key, value in parsed_custom_weights.items()}
-        except (json.JSONDecodeError, AttributeError):
+            if not isinstance(parsed_custom_weights, dict):
+                print(
+                    "[CriteriaModal] ⚠️ Expected a JSON object with 7 criteria weights but received",
+                    type(parsed_custom_weights).__name__,
+                )
+                parsed_custom_weights = None
+            else:
+                total = sum(value for value in parsed_custom_weights.values() if isinstance(value, (int, float)))
+                if total and abs(total - 1.0) > 0.01:
+                    parsed_custom_weights = {
+                        key: value / total if isinstance(value, (int, float)) else value
+                        for key, value in parsed_custom_weights.items()
+                    }
+
+                ordered_keys = [
+                    "capacity",
+                    "connection_speed",
+                    "resilience",
+                    "land_planning",
+                    "latency",
+                    "cooling",
+                    "price_sensitivity",
+                ]
+                formatted_weights = []
+                for key in ordered_keys:
+                    value = parsed_custom_weights.get(key)
+                    if isinstance(value, (int, float)):
+                        formatted_weights.append(f"{key}={value:.3f}")
+                    else:
+                        formatted_weights.append(f"{key}=None")
+                print(
+                    "[CriteriaModal] Normalized criteria weights received -> "
+                    + ", ".join(formatted_weights)
+                )
+        except (json.JSONDecodeError, AttributeError, TypeError) as exc:
+            print(f"[CriteriaModal] ❌ Failed to parse custom weights: {exc}")
             parsed_custom_weights = None
 
     active_scoring_method = scoring_method.lower()
