@@ -1830,7 +1830,8 @@ def calculate_persona_weighted_score(
         proximity_scores,
         persona,
         perspective,
-        user_max_price_mwh,  # Pass through to price calculation
+        user_max_price_mwh,
+        user_ideal_mw
         shared_component_scores,
     )
 
@@ -4058,6 +4059,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
