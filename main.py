@@ -2595,6 +2595,7 @@ async def get_enhanced_geojson(
     user_ideal_mw: Optional[float] = Query(  # NEW PARAMETER
         None,
         description="User's preferred capacity in MW (overrides persona default, sets Gaussian peak)",
+    ),
 ) -> Dict[str, Any]:
     start_time = time.time()
     parsed_custom_weights = None
@@ -4019,6 +4020,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
