@@ -2715,7 +2715,7 @@ async def get_enhanced_geojson(
                 proximity_scores,
                 persona_for_components,
                 user_max_price_mwh=user_max_price_mwh,
-                user_ideal_mw=user_ideal_mw,  # Pass through user's ideal
+                user_ideal_mw=user_ideal_mw,  
             )
             topsis_component_scores.append(component_scores)
 
@@ -2740,6 +2740,7 @@ async def get_enhanced_geojson(
                         proximity_scores,
                         persona_for_components,
                         user_max_price_mwh=user_max_price_mwh,
+                        user_ideal_mw=user_ideal_mw,
                     )
                 )
                 topsis_info = topsis_results[index] if index < len(topsis_results) else None
@@ -4020,6 +4021,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
