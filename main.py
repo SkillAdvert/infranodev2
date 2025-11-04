@@ -262,10 +262,10 @@ for persona_name, weights_dict in POWER_DEVELOPER_PERSONAS.items():
         print(f"⚠️ WARNING: {persona_name} weights sum to {total_weight}, not 1.0")
 
 PERSONA_CAPACITY_PARAMS = {
-    "edge_computing": {"min_mw": 0.3, "ideal_mw": 2.0, "max_mw": 5.0,"tolerance_mw": 2.0},
-    "colocation": {"min_mw": 4.0, "ideal_mw": 12.0, "max_mw": 25.0, "tolerance_mw": 10.0},
-    "hyperscaler": {"min_mw": 20.0, "ideal_mw": 50.0, "max_mw": 200.0, "tolerance_mw": 50.0},
-    "default": {"min_mw": 5.0, "ideal_mw": 50.0, "max_mw": 100.0, "tolerance_mw": 35.0},
+    "edge_computing": {"min_mw": 0.3, "ideal_mw": 2.0, "max_mw": 5.0,"tolerance_factor": 0.4},
+    "colocation": {"min_mw": 4.0, "ideal_mw": 12.0, "max_mw": 25.0, "tolerance_factor": 0.4},
+    "hyperscaler": {"min_mw": 20.0, "ideal_mw": 50.0, "max_mw": 200.0, "tolerance_factor": 0.4},
+    "default": {"min_mw": 5.0, "ideal_mw": 50.0, "max_mw": 100.0, "tolerance_factor": 0.4},
 }
 
 # ============================================================================
@@ -1217,10 +1217,15 @@ def calculate_capacity_component_score(capacity_mw: float, persona: Optional[str
         persona_key = "default"
     
     params = PERSONA_CAPACITY_PARAMS.get(persona_key, PERSONA_CAPACITY_PARAMS["default"])
-    ideal = params.get("ideal_mw", 75.0)
-    tolerance = params.get("tolerance_mw", ideal * 0.5)
     
-    # Gaussian: 100 * exp(-((x - ideal)^2) / (2 * tolerance^2))
+    #Use user's ideal if provided, otherwise fall back to persona default
+    ideal = user_ideal_mw if user_ideal_mw is not None else params.get("ideal_mw", 75.0)
+    
+    # Calculate tolerance as 40% of ideal capacity
+    tolerance_factor = params.get("tolerance_factor", 0.4)
+    tolerance = ideal * tolerance_factor
+    
+    # Gaussian distribution: 100 * exp(-((x - ideal)²) / (2 × tolerance²))
     exponent = -((capacity_mw - ideal) ** 2) / (2 * tolerance ** 2)
     score = 100.0 * math.exp(exponent)
     
@@ -1679,7 +1684,8 @@ def build_persona_component_scores(
     proximity_scores: Dict[str, float],
     persona: Optional[str] = None,
     perspective: str = "demand",
-    user_max_price_mwh: Optional[float] = None,  # NEW parameter
+    user_max_price_mwh: Optional[float] = None,  
+    user_ideal_mw: Optional[float] = None,  
     shared_component_scores: Optional[Dict[str, float]] = None,
 ) -> Dict[str, float]:
     """
@@ -1708,6 +1714,7 @@ def build_persona_component_scores(
     base_scores["capacity"] = calculate_capacity_component_score(
         project.get("capacity_mw", 0) or 0,
         persona,
+        user_ideal_mw, # pass through users ideal capacity
     )
 
     return base_scores
@@ -1791,10 +1798,11 @@ def calculate_persona_weighted_score(
     proximity_scores: Dict[str, float],
     persona: PersonaType = "hyperscaler",
     perspective: str = "demand",
-    user_max_price_mwh: Optional[float] = None,  # NEW parameter
+    user_max_price_mwh: Optional[float] = None,
+    user_ideal_mw: Optional[float] = None,  
     shared_component_scores: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
-    r"""Calculate the persona score with explicit fusion equations.
+    """Calculate the persona score with explicit fusion equations.
 
     Pipeline overview (all values are clamped to ``[0, 1]`` where needed):
 
@@ -2165,7 +2173,10 @@ def calculate_best_customer_match(project: Dict[str, Any], proximity_scores: Dic
             scoring_result = calculate_persona_weighted_score(
                 project,
                 proximity_scores,
-                persona,  # type: ignore[arg-type]
+                persona,
+                "demand",
+                None,
+                None,
                 shared_component_scores=shared_scores,
             )
             customer_scores[persona] = scoring_result["investment_rating"]
@@ -2510,7 +2521,7 @@ async def score_user_sites(
             }
         )
         if persona:
-            rating_result = calculate_persona_weighted_score(site_data, prox_scores, persona)
+            rating_result = calculate_persona_weighted_score(site_data, prox_scores, persona, "demand", None, None)
         else:
             rating_result = calculate_enhanced_investment_rating(site_data, prox_scores)
 
@@ -2581,6 +2592,9 @@ async def get_enhanced_geojson(
         None,
         description="User's maximum acceptable power price (£/MWh) for price_sensitivity scoring",
     ),
+    user_ideal_mw: Optional[float] = Query(  # NEW PARAMETER
+        None,
+        description="User's preferred capacity in MW (overrides persona default, sets Gaussian peak)",
 ) -> Dict[str, Any]:
     start_time = time.time()
     parsed_custom_weights = None
@@ -2700,6 +2714,7 @@ async def get_enhanced_geojson(
                 proximity_scores,
                 persona_for_components,
                 user_max_price_mwh=user_max_price_mwh,
+                user_ideal_mw=user_ideal_mw,  # Pass through user's ideal
             )
             topsis_component_scores.append(component_scores)
 
@@ -2736,7 +2751,7 @@ async def get_enhanced_geojson(
                         )
                     elif persona:
                         rating_result = calculate_persona_weighted_score(
-                            project, proximity_scores, persona, "demand", user_max_price_mwh
+                            project, proximity_scores, persona, "demand", user_max_price_mwh, user_ideal_mw
                         )
                     else:
                         rating_result = calculate_enhanced_investment_rating(project, proximity_scores)
@@ -2788,6 +2803,7 @@ async def get_enhanced_geojson(
                         persona,
                         "demand",
                         user_max_price_mwh,
+                        user_ideal_mw,
                     )
                 else:
                     rating_result = calculate_enhanced_investment_rating(project, proximity_scores)
@@ -3635,7 +3651,7 @@ async def get_customer_match_projects(
             "nearest_distances": {},
         }
         customer_match = calculate_best_customer_match(project, dummy_proximity)
-        target_scoring = calculate_persona_weighted_score(project, dummy_proximity, target_customer)
+        target_scoring = calculate_persona_weighted_score(project, dummy_proximity, target_customer, "demand", None, None)
         customer_analysis.append(
             {
                 "project_id": project.get("ref_id"),
@@ -4003,6 +4019,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
