@@ -1890,82 +1890,6 @@ def calculate_persona_weighted_score(
         },
     }
 
-def calculate_persona_topsis_score(
-    component_scores: Sequence[Dict[str, float]],
-    weights: Dict[str, float],
-) -> Dict[str, Any]:
-    """Apply TOPSIS using persona weights, supporting positive and negative impacts."""
-
-    if not component_scores:
-        return {
-            "scores": [],
-            "ideal_solution": {},
-            "anti_ideal_solution": {},
-        }
-
-    component_keys = list(component_scores[0].keys())
-    denominators: Dict[str, float] = {}
-    for key in component_keys:
-        sum_squares = sum((scores.get(key, 0.0) or 0.0) ** 2 for scores in component_scores)
-        denominators[key] = math.sqrt(sum_squares) or 1e-9
-
-    weighted_vectors: List[Dict[str, Dict[str, float]]] = []
-    for scores in component_scores:
-        normalized: Dict[str, float] = {}
-        weighted: Dict[str, float] = {}
-        for key in component_keys:
-            raw_value = scores.get(key, 0.0) or 0.0
-            denominator = denominators[key]
-            normalized_value = raw_value / denominator if denominator else 0.0
-            weight = weights.get(key, 0.0)
-            weighted_value = normalized_value * weight
-            normalized[key] = normalized_value
-            weighted[key] = weighted_value
-        weighted_vectors.append(
-            {
-                "normalized_scores": normalized,
-                "weighted_normalized_scores": weighted,
-            }
-        )
-
-    ideal_solution: Dict[str, float] = {}
-    anti_ideal_solution: Dict[str, float] = {}
-    for key in component_keys:
-        values = [vector["weighted_normalized_scores"][key] for vector in weighted_vectors]
-        ideal_solution[key] = max(values)
-        anti_ideal_solution[key] = min(values)
-
-    results: List[Dict[str, Any]] = []
-    for vector in weighted_vectors:
-        weighted = vector["weighted_normalized_scores"]
-        distance_to_ideal = math.sqrt(
-            sum((weighted[key] - ideal_solution[key]) ** 2 for key in component_keys)
-        )
-        distance_to_anti_ideal = math.sqrt(
-            sum((weighted[key] - anti_ideal_solution[key]) ** 2 for key in component_keys)
-        )
-        closeness = 0.0
-        denominator = distance_to_ideal + distance_to_anti_ideal
-        if denominator > 0:
-            closeness = distance_to_anti_ideal / denominator
-        elif distance_to_ideal == 0 and distance_to_anti_ideal == 0:
-            closeness = 1.0
-        results.append(
-            {
-                "normalized_scores": vector["normalized_scores"],
-                "weighted_normalized_scores": weighted,
-                "distance_to_ideal": distance_to_ideal,
-                "distance_to_anti_ideal": distance_to_anti_ideal,
-                "closeness_coefficient": closeness,
-            }
-        )
-
-    return {
-        "scores": results,
-        "ideal_solution": ideal_solution,
-        "anti_ideal_solution": anti_ideal_solution,
-    }
-
 def calculate_custom_weighted_score(
     project: Dict[str, Any],
     proximity_scores: Dict[str, float],
@@ -2561,10 +2485,6 @@ async def get_enhanced_geojson(
     persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring"),
     apply_capacity_filter: bool = Query(True, description="Filter projects by persona capacity requirements"),
     custom_weights: Optional[str] = Query(None, description="JSON string of custom weights (overrides persona)"),
-    scoring_method: Literal["weighted_sum", "topsis"] = Query(
-        "weighted_sum",
-        description="Scoring method to apply (weighted_sum or topsis)",
-    ),
     dc_demand_mw: Optional[float] = Query(None, description="DC facility demand in MW for capacity gating"),
     source_table: str = Query(
         "renewable_projects",
@@ -2588,12 +2508,10 @@ async def get_enhanced_geojson(
         except (json.JSONDecodeError, AttributeError):
             parsed_custom_weights = None
 
-    active_scoring_method = scoring_method.lower()
-    use_topsis = active_scoring_method == "topsis"
     scoring_mode = "custom weights" if parsed_custom_weights else ("persona-based" if persona else "renewable energy")
     print(
         "🚀 ENHANCED ENDPOINT WITH "
-        f"{scoring_mode.upper()} SCORING [{active_scoring_method.upper()}] - Processing {limit} projects..."
+        f"{scoring_mode.upper()} SCORING - Processing {limit} projects with weighted sum..."
     )
 
     try:
@@ -2660,132 +2578,24 @@ async def get_enhanced_geojson(
             "nearest_distances": {},
         }
 
-    # TOPSIS-specific variables
-    topsis_component_scores: List[Dict[str, float]] = []
-    topsis_results: List[Dict[str, Any]] = []
-    topsis_ideal_solution: Dict[str, float] = {}
-    topsis_anti_ideal_solution: Dict[str, float] = {}
-    weights_for_topsis: Dict[str, float] = {}
-    topsis_persona_label: Optional[str] = persona
-    persona_for_components: Optional[str] = persona if persona else None
-
-    if use_topsis:
-        # Determine weights for TOPSIS
-        if parsed_custom_weights:
-            weights_for_topsis = parsed_custom_weights
-            persona_for_components = "custom"
-            topsis_persona_label = persona or "custom"
-        elif persona:
-            weights_for_topsis = PERSONA_WEIGHTS[persona]
-            persona_for_components = persona
-            topsis_persona_label = persona
-        else:
-            topsis_persona_label = "hyperscaler"
-            weights_for_topsis = PERSONA_WEIGHTS[topsis_persona_label]
-            persona_for_components = topsis_persona_label
-            print(
-                "⚠️ TOPSIS requested without persona/custom weights; defaulting to hyperscaler persona weights"
-            )
-
-        # Collect component scores for all projects
-        for index, project in enumerate(valid_projects):
-            proximity_scores = get_proximity_scores_for_index(index)
-            component_scores = build_persona_component_scores(
-                project,
-                proximity_scores,
-                persona_for_components,
-                user_max_price_mwh=user_max_price_mwh,
-            )
-            topsis_component_scores.append(component_scores)
-
-        # Calculate TOPSIS scores
-        topsis_output = calculate_persona_topsis_score(topsis_component_scores, weights_for_topsis)
-        topsis_results = topsis_output.get("scores", []) if topsis_output else []
-        topsis_ideal_solution = topsis_output.get("ideal_solution", {}) if topsis_output else {}
-        topsis_anti_ideal_solution = topsis_output.get("anti_ideal_solution", {}) if topsis_output else {}
-
     features: List[Dict[str, Any]] = []
     for index, project in enumerate(valid_projects):
         try:
             proximity_scores = get_proximity_scores_for_index(index)
-            
-            if use_topsis:
-                # TOPSIS scoring path
-                component_scores = (
-                    topsis_component_scores[index]
-                    if index < len(topsis_component_scores)
-                    else build_persona_component_scores(
-                        project,
-                        proximity_scores,
-                        persona_for_components,
-                        user_max_price_mwh=user_max_price_mwh,
-                    )
+            if parsed_custom_weights:
+                rating_result = calculate_custom_weighted_score(
+                    project, proximity_scores, parsed_custom_weights
                 )
-                topsis_info = topsis_results[index] if index < len(topsis_results) else None
-                
-                if not topsis_info:
-                    # Fallback to weighted sum if TOPSIS fails
-                    if parsed_custom_weights:
-                        rating_result = calculate_custom_weighted_score(
-                            project, proximity_scores, parsed_custom_weights
-                        )
-                    elif persona:
-                        rating_result = calculate_persona_weighted_score(
-                            project, proximity_scores, persona, "demand", user_max_price_mwh
-                        )
-                    else:
-                        rating_result = calculate_enhanced_investment_rating(project, proximity_scores)
-                else:
-                    # Use TOPSIS results
-                    closeness = topsis_info.get("closeness_coefficient", 0.0)
-                    internal_total_score = 10.0 + closeness * 90.0
-                    display_rating = round(internal_total_score / 10.0, 1)
-                    color = get_color_from_score(internal_total_score)
-                    description = get_rating_description(internal_total_score)
-                    
-                    component_scores_rounded = {
-                        key: round(value, 1) for key, value in component_scores.items()
-                    }
-                    weighted_contributions = {
-                        key: round(component_scores.get(key, 0.0) * weights_for_topsis.get(key, 0.0), 1)
-                        for key in component_scores
-                    }
-                    
-                    rating_result = {
-                        "investment_rating": display_rating,
-                        "rating_description": description,
-                        "color_code": color,
-                        "component_scores": component_scores_rounded,
-                        "weighted_contributions": weighted_contributions,
-                        "persona": topsis_persona_label,
-                        "persona_weights": weights_for_topsis,
-                        "internal_total_score": round(internal_total_score, 1),
-                        "nearest_infrastructure": proximity_scores.get("nearest_distances", {}),
-                        "topsis_metrics": {
-                            "distance_to_ideal": topsis_info.get("distance_to_ideal"),
-                            "distance_to_anti_ideal": topsis_info.get("distance_to_anti_ideal"),
-                            "closeness_coefficient": closeness,
-                            "weighted_normalized_scores": topsis_info.get("weighted_normalized_scores"),
-                            "normalized_scores": topsis_info.get("normalized_scores"),
-                        },
-                        "scoring_methodology": "Persona TOPSIS scoring (closeness scaled to 1-10)",
-                    }
+            elif persona:
+                rating_result = calculate_persona_weighted_score(
+                    project,
+                    proximity_scores,
+                    persona,
+                    "demand",
+                    user_max_price_mwh,
+                )
             else:
-                # Traditional weighted sum scoring
-                if parsed_custom_weights:
-                    rating_result = calculate_custom_weighted_score(
-                        project, proximity_scores, parsed_custom_weights
-                    )
-                elif persona:
-                    rating_result = calculate_persona_weighted_score(
-                        project,
-                        proximity_scores,
-                        persona,
-                        "demand",
-                        user_max_price_mwh,
-                    )
-                else:
-                    rating_result = calculate_enhanced_investment_rating(project, proximity_scores)
+                rating_result = calculate_enhanced_investment_rating(project, proximity_scores)
 
             # Build feature properties
             properties: Dict[str, Any] = {
@@ -2809,11 +2619,6 @@ async def get_enhanced_geojson(
                 "infrastructure_bonus": rating_result.get("infrastructure_bonus", 0.0),
                 "internal_total_score": rating_result.get("internal_total_score"),
             }
-
-            # Add TOPSIS-specific metrics if using TOPSIS
-            if use_topsis and "topsis_metrics" in rating_result:
-                properties["topsis_metrics"] = rating_result["topsis_metrics"]
-                properties["scoring_methodology"] = rating_result.get("scoring_methodology")
 
             features.append(
                 {
@@ -2905,7 +2710,7 @@ async def get_enhanced_geojson(
     # Build metadata
     metadata: Dict[str, Any] = {
         "scoring_system": f"{scoring_mode} - 1.0-10.0 display scale",
-        "scoring_method": active_scoring_method,
+        "scoring_method": "weighted_sum",
         "persona": persona,
         "processing_time_seconds": round(processing_time, 2),
         "projects_processed": len(features),
@@ -2921,20 +2726,6 @@ async def get_enhanced_geojson(
             "below_average": "4.0-4.9",
         },
     }
-
-    # Add TOPSIS-specific metadata if using TOPSIS
-    if use_topsis:
-        metadata.update(
-            {
-                "topsis_ideal_solution": {
-                    key: round(value, 6) for key, value in topsis_ideal_solution.items()
-                },
-                "topsis_anti_ideal_solution": {
-                    key: round(value, 6) for key, value in topsis_anti_ideal_solution.items()
-                },
-                "topsis_persona_reference": topsis_persona_label,
-            }
-        )
 
     return {"type": "FeatureCollection", "features": features, "metadata": metadata}
 
