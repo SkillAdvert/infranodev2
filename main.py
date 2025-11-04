@@ -138,7 +138,7 @@ PERSONA_TARGET_COMPONENTS: Dict[str, Dict[str, float]] = {
 PERSONA_SCORING_TUNING: Dict[str, Dict[str, float]] = {
     "hyperscaler": {
         "alpha": 1.0,
-        "beta": 1.0,
+        "beta": 0.6,
         "evidence_floor": 0.02,
         "logistic_midpoint": 0.5,
         "logistic_steepness": 8,
@@ -149,7 +149,7 @@ PERSONA_SCORING_TUNING: Dict[str, Dict[str, float]] = {
     },
     "colocation": {
         "alpha": 1.0,
-        "beta": 1.0,
+        "beta": 0.6,
         "evidence_floor": 0.025,
         "logistic_midpoint": 0.5,
         "logistic_steepness": 8,
@@ -160,7 +160,7 @@ PERSONA_SCORING_TUNING: Dict[str, Dict[str, float]] = {
     },
     "edge_computing": {
         "alpha": 1.0,
-        "beta": 1.0,
+        "beta": 0.6,
         "evidence_floor": 0.03,
         "logistic_midpoint": 0.5,
         "logistic_steepness": 8,
@@ -171,7 +171,7 @@ PERSONA_SCORING_TUNING: Dict[str, Dict[str, float]] = {
     },
     "default": {
         "alpha": 1.0,
-        "beta": 1.0,
+        "beta": 0.6,
         "evidence_floor": 0.025,
         "logistic_midpoint": 0.5,
         "logistic_steepness": 8,
@@ -185,7 +185,7 @@ PERSONA_SCORING_TUNING: Dict[str, Dict[str, float]] = {
 PERSONA_CAPACITY_RANGES = {
     "edge_computing": {"min": 0.4, "max": 5},
     "colocation": {"min": 5, "max": 30},
-    "hyperscaler": {"min": 30, "max": 1000},
+    "hyperscaler": {"min": 30, "max": 250},
 }
 
 # ============================================================================
@@ -470,7 +470,7 @@ async def enrich_and_rescore_with_tnuos(
 
     print("📊 Enriching projects with TNUoS zones...")
 
-    enriched_count = 0
+    enriched_count = 100
 
     for feature in features_sorted:
         properties = feature.setdefault("properties", {})
@@ -3998,6 +3998,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
