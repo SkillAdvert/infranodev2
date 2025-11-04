@@ -262,10 +262,10 @@ for persona_name, weights_dict in POWER_DEVELOPER_PERSONAS.items():
         print(f"⚠️ WARNING: {persona_name} weights sum to {total_weight}, not 1.0")
 
 PERSONA_CAPACITY_PARAMS = {
-    "edge_computing": {"min_mw": 0.4, "ideal_mw": 2.0, "max_mw": 5.0},
-    "colocation": {"min_mw": 5.0, "ideal_mw": 15.0, "max_mw": 30.0},
-    "hyperscaler": {"min_mw": 30.0, "ideal_mw": 75.0, "max_mw": 200.0},
-    "default": {"min_mw": 5.0, "ideal_mw": 50.0, "max_mw": 100.0},
+    "edge_computing": {"min_mw": 0.3, "ideal_mw": 2.0, "max_mw": 5.0,"tolerance_mw": 2.0},
+    "colocation": {"min_mw": 4.0, "ideal_mw": 12.0, "max_mw": 25.0, "tolerance_mw": 10.0},
+    "hyperscaler": {"min_mw": 20.0, "ideal_mw": 50.0, "max_mw": 200.0, "tolerance_mw": 50.0},
+    "default": {"min_mw": 5.0, "ideal_mw": 50.0, "max_mw": 100.0, "tolerance_mw": 35.0},
 }
 
 # ============================================================================
@@ -1215,10 +1215,15 @@ def calculate_capacity_component_score(capacity_mw: float, persona: Optional[str
     persona_key = (persona or "default").lower()
     if persona_key == "custom":
         persona_key = "default"
+    
     params = PERSONA_CAPACITY_PARAMS.get(persona_key, PERSONA_CAPACITY_PARAMS["default"])
     ideal = params.get("ideal_mw", 75.0)
-    logistic_argument = capacity_mw - ideal
-    score = 100.0 / (1.0 + math.exp(-0.05 * logistic_argument))
+    tolerance = params.get("tolerance_mw", ideal * 0.5)
+    
+    # Gaussian: 100 * exp(-((x - ideal)^2) / (2 * tolerance^2))
+    exponent = -((capacity_mw - ideal) ** 2) / (2 * tolerance ** 2)
+    score = 100.0 * math.exp(exponent)
+    
     return max(0.0, min(100.0, float(score)))
 
 
@@ -3998,6 +4003,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
