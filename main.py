@@ -1211,14 +1211,18 @@ def get_rating_description(score_out_of_100: float) -> str:
     return "Very Bad"
 
 
-def calculate_capacity_component_score(capacity_mw: float, persona: Optional[str] = None) -> float:
+def calculate_capacity_component_score(
+    capacity_mw: float,
+    persona: Optional[str] = None,
+    user_ideal_mw: Optional[float] = None,
+) -> float:
     persona_key = (persona or "default").lower()
     if persona_key == "custom":
         persona_key = "default"
     
     params = PERSONA_CAPACITY_PARAMS.get(persona_key, PERSONA_CAPACITY_PARAMS["default"])
     
-    #Use user's ideal if provided, otherwise fall back to persona default
+    # Use user's ideal if provided, otherwise fall back to persona default
     ideal = user_ideal_mw if user_ideal_mw is not None else params.get("ideal_mw", 75.0)
     
     # Calculate tolerance as 40% of ideal capacity
