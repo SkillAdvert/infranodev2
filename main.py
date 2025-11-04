@@ -138,47 +138,47 @@ PERSONA_TARGET_COMPONENTS: Dict[str, Dict[str, float]] = {
 PERSONA_SCORING_TUNING: Dict[str, Dict[str, float]] = {
     "hyperscaler": {
         "alpha": 1.0,
-        "beta": 0.6,
-        "evidence_floor": 0.02,
+        "beta": 0.0,
+        "evidence_floor": 1e-9,
         "logistic_midpoint": 0.5,
-        "logistic_steepness": 8,
+        "logistic_steepness": 4,
         "evidence_shift": 0.2,
-        "sum_weight": 0.6,
-        "product_weight": 0.3,
-        "alignment_weight": 0.1,
+        "sum_weight": 1.0,
+        "product_weight": 0.0,
+        "alignment_weight": 0.0,
     },
     "colocation": {
         "alpha": 1.0,
-        "beta": 0.6,
-        "evidence_floor": 0.025,
+        "beta": 0.0,
+        "evidence_floor": 1e-9,
         "logistic_midpoint": 0.5,
-        "logistic_steepness": 8,
+        "logistic_steepness": 4,
         "evidence_shift": 0.2,
-        "sum_weight": 0.6,
-        "product_weight": 0.3,
-        "alignment_weight": 0.1,
+        "sum_weight": 1.0,
+        "product_weight": 0.0,
+        "alignment_weight": 0.0,
     },
     "edge_computing": {
         "alpha": 1.0,
-        "beta": 0.6,
-        "evidence_floor": 0.03,
+        "beta": 0.0,
+        "evidence_floor": 1e-9,
         "logistic_midpoint": 0.5,
-        "logistic_steepness": 8,
+        "logistic_steepness": 4,
         "evidence_shift": 0.2,
-        "sum_weight": 0.6,
-        "product_weight": 0.3,
-        "alignment_weight": 0.1,
+        "sum_weight": 1.0,
+        "product_weight": 0.0,
+        "alignment_weight": 0.0,
     },
     "default": {
         "alpha": 1.0,
-        "beta": 0.6,
-        "evidence_floor": 0.025,
+        "beta": 0.0,
+        "evidence_floor": 1e-9,
         "logistic_midpoint": 0.5,
-        "logistic_steepness": 8,
+        "logistic_steepness": 4,
         "evidence_shift": 0.2,
-        "sum_weight": 0.6,
-        "product_weight": 0.3,
-        "alignment_weight": 0.1,
+        "sum_weight": 1.0,
+        "product_weight": 0.0,
+        "alignment_weight": 0.0,
     },
 }
 
@@ -3998,6 +3998,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
