@@ -262,10 +262,10 @@ for persona_name, weights_dict in POWER_DEVELOPER_PERSONAS.items():
         print(f"⚠️ WARNING: {persona_name} weights sum to {total_weight}, not 1.0")
 
 PERSONA_CAPACITY_PARAMS = {
-    "edge_computing": {"min_mw": 0.3, "ideal_mw": 2.0, "max_mw": 5.0,"tolerance_factor": 0.4},
-    "colocation": {"min_mw": 4.0, "ideal_mw": 12.0, "max_mw": 25.0, "tolerance_factor": 0.4},
+    "edge_computing": {"min_mw": 0.3, "ideal_mw": 2.0, "max_mw": 5.0,"tolerance_factor": 0.7},
+    "colocation": {"min_mw": 4.0, "ideal_mw": 12.0, "max_mw": 25.0, "tolerance_factor": 0.5},
     "hyperscaler": {"min_mw": 20.0, "ideal_mw": 50.0, "max_mw": 200.0, "tolerance_factor": 0.4},
-    "default": {"min_mw": 5.0, "ideal_mw": 50.0, "max_mw": 100.0, "tolerance_factor": 0.4},
+    "default": {"min_mw": 5.0, "ideal_mw": 50.0, "max_mw": 100.0, "tolerance_factor": 0.5},
 }
 
 # ============================================================================
@@ -1225,8 +1225,8 @@ def calculate_capacity_component_score(
     # Use user's ideal if provided, otherwise fall back to persona default
     ideal = user_ideal_mw if user_ideal_mw is not None else params.get("ideal_mw", 75.0)
     
-    # Calculate tolerance as 40% of ideal capacity
-    tolerance_factor = params.get("tolerance_factor", 0.4)
+    # Calculate tolerance as 50% of ideal capacity
+    tolerance_factor = params.get("tolerance_factor", 0.5)
     tolerance = ideal * tolerance_factor
     
     # Gaussian distribution: 100 * exp(-((x - ideal)²) / (2 × tolerance²))
@@ -4059,6 +4059,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
 
 
 
