@@ -4055,6 +4055,201 @@ async def get_tec_connections(
         raise HTTPException(500, f"Failed to fetch TEC connections: {exc}")
 
 
+# ============================================================================
+# ML-BASED DATA CENTER LOCATION RECOMMENDATION ENDPOINT
+# ============================================================================
+
+class DataCenterLocation(BaseModel):
+    """Existing data center location for training"""
+    latitude: float
+    longitude: float
+    name: str = "Unknown"
+
+
+class MLRecommendationRequest(BaseModel):
+    """Request for ML-based location recommendations"""
+    existing_locations: List[DataCenterLocation]
+    num_candidates: int = 50
+    top_n: int = 10
+    grid_spacing_deg: float = 0.75
+
+
+class MLLocationRecommendation(BaseModel):
+    """Single location recommendation"""
+    latitude: float
+    longitude: float
+    composite_score: float
+    recommendation: str
+    feature_scores: Dict[str, float]
+    distances_km: Dict[str, float]
+    percentile_rank: Optional[float] = None
+
+
+class MLRecommendationResponse(BaseModel):
+    """Response with ML recommendations"""
+    top_recommendations: List[MLLocationRecommendation]
+    model_info: Dict[str, Any]
+    processing_time_seconds: float
+
+
+@app.post("/api/ml/datacenter-locations", response_model=MLRecommendationResponse)
+async def recommend_datacenter_locations(request: MLRecommendationRequest) -> MLRecommendationResponse:
+    """
+    ML-based data center location recommendations using existing sites as training data.
+
+    This endpoint:
+    1. Analyzes infrastructure proximity patterns of existing data centers
+    2. Generates candidate locations across the UK
+    3. Scores candidates based on learned patterns
+    4. Returns top recommendations
+    """
+    start_time = time.time()
+
+    print(f"🤖 ML Location Recommendation - Training on {len(request.existing_locations)} existing sites")
+
+    # STEP 1: Extract features from existing data centers
+    existing_sites = []
+    for loc in request.existing_locations:
+        existing_sites.append({
+            "site_name": loc.name,
+            "technology_type": "datacenter",
+            "capacity_mw": 50.0,
+            "latitude": loc.latitude,
+            "longitude": loc.longitude,
+            "commissioning_year": 2025,
+            "is_btm": False,
+            "development_status_short": "operational",
+            "capacity_factor": 1.0,
+        })
+
+    print("   📊 Extracting infrastructure features from existing locations...")
+    existing_proximity = await calculate_proximity_scores_batch(existing_sites)
+
+    # STEP 2: Calculate statistics of "good" locations
+    feature_cols = ["substation_score", "transmission_score", "fiber_score", "ixp_score", "water_score"]
+    feature_stats = {col: [] for col in feature_cols}
+
+    for prox in existing_proximity:
+        for col in feature_cols:
+            feature_stats[col].append(prox.get(col, 0.0))
+
+    # Calculate mean scores
+    mean_scores = {col: sum(vals) / len(vals) if vals else 0.0 for col, vals in feature_stats.items()}
+
+    # Calculate composite scores for existing sites
+    existing_composites = []
+    for prox in existing_proximity:
+        composite = (
+            prox.get("substation_score", 0.0) * 0.3 +
+            prox.get("transmission_score", 0.0) * 0.25 +
+            prox.get("fiber_score", 0.0) * 0.25 +
+            prox.get("ixp_score", 0.0) * 0.15 +
+            prox.get("water_score", 0.0) * 0.05
+        )
+        existing_composites.append(composite)
+
+    # Use 25th percentile as minimum threshold
+    sorted_composites = sorted(existing_composites)
+    threshold_index = max(0, int(len(sorted_composites) * 0.25))
+    threshold_score = sorted_composites[threshold_index] if sorted_composites else 0.0
+
+    print(f"   ✅ Training complete - Threshold score: {threshold_score:.2f}")
+    print(f"      Mean substation: {mean_scores['substation_score']:.2f}")
+    print(f"      Mean transmission: {mean_scores['transmission_score']:.2f}")
+    print(f"      Mean fiber: {mean_scores['fiber_score']:.2f}")
+
+    # STEP 3: Generate candidate locations
+    print(f"   🗺️  Generating {request.num_candidates} candidate locations...")
+    candidates = []
+    lat_min, lat_max = 50.0, 59.0
+    lon_min, lon_max = -8.0, 2.0
+
+    import random
+    random.seed(42)  # Reproducible results
+
+    for _ in range(request.num_candidates):
+        candidates.append({
+            "site_name": f"Candidate_{len(candidates)}",
+            "technology_type": "datacenter",
+            "capacity_mw": 50.0,
+            "latitude": random.uniform(lat_min, lat_max),
+            "longitude": random.uniform(lon_min, lon_max),
+            "commissioning_year": 2025,
+            "is_btm": False,
+            "development_status_short": "proposed",
+            "capacity_factor": 1.0,
+        })
+
+    # STEP 4: Score all candidates
+    print(f"   📈 Scoring {len(candidates)} candidates...")
+    candidate_proximity = await calculate_proximity_scores_batch(candidates)
+
+    # STEP 5: Rank and filter
+    scored_candidates = []
+    for i, (candidate, prox) in enumerate(zip(candidates, candidate_proximity)):
+        composite = (
+            prox.get("substation_score", 0.0) * 0.3 +
+            prox.get("transmission_score", 0.0) * 0.25 +
+            prox.get("fiber_score", 0.0) * 0.25 +
+            prox.get("ixp_score", 0.0) * 0.15 +
+            prox.get("water_score", 0.0) * 0.05
+        )
+
+        recommendation = "Recommended" if composite >= threshold_score else "Not Recommended"
+
+        scored_candidates.append({
+            "latitude": round(candidate["latitude"], 4),
+            "longitude": round(candidate["longitude"], 4),
+            "composite_score": round(composite, 2),
+            "recommendation": recommendation,
+            "feature_scores": {
+                "substation": round(prox.get("substation_score", 0.0), 2),
+                "transmission": round(prox.get("transmission_score", 0.0), 2),
+                "fiber": round(prox.get("fiber_score", 0.0), 2),
+                "ixp": round(prox.get("ixp_score", 0.0), 2),
+                "water": round(prox.get("water_score", 0.0), 2),
+            },
+            "distances_km": {
+                "substation": prox.get("nearest_distances", {}).get("substation_km", 999.9),
+                "transmission": prox.get("nearest_distances", {}).get("transmission_km", 999.9),
+                "fiber": prox.get("nearest_distances", {}).get("fiber_km", 999.9),
+                "ixp": prox.get("nearest_distances", {}).get("ixp_km", 999.9),
+                "water": prox.get("nearest_distances", {}).get("water_km", 999.9),
+            }
+        })
+
+    # Sort by composite score
+    scored_candidates.sort(key=lambda x: x["composite_score"], reverse=True)
+
+    # Add percentile ranks
+    for i, candidate in enumerate(scored_candidates):
+        candidate["percentile_rank"] = round((1 - i / len(scored_candidates)) * 100, 1)
+
+    top_recommendations = scored_candidates[:request.top_n]
+
+    processing_time = time.time() - start_time
+    print(f"   ✅ ML recommendations complete in {processing_time:.2f}s")
+
+    return MLRecommendationResponse(
+        top_recommendations=[MLLocationRecommendation(**rec) for rec in top_recommendations],
+        model_info={
+            "model_type": "infrastructure_proximity_based",
+            "training_samples": len(request.existing_locations),
+            "threshold_score": round(threshold_score, 2),
+            "candidates_evaluated": len(candidates),
+            "feature_weights": {
+                "substation": 0.30,
+                "transmission": 0.25,
+                "fiber": 0.25,
+                "ixp": 0.15,
+                "water": 0.05,
+            },
+            "mean_infrastructure_scores": {k: round(v, 2) for k, v in mean_scores.items()},
+        },
+        processing_time_seconds=round(processing_time, 2),
+    )
+
+
 if __name__ == "__main__":
     import uvicorn
 
