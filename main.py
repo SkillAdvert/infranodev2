@@ -470,7 +470,7 @@ async def enrich_and_rescore_with_tnuos(
 
     print("📊 Enriching projects with TNUoS zones...")
 
-    enriched_count = 100
+    enriched_count = 0
 
     for feature in features_sorted:
         properties = feature.setdefault("properties", {})
@@ -2912,7 +2912,7 @@ async def get_enhanced_geojson(
             )
 
     try:
-        features = await enrich_and_rescore_top_25_with_tnuos(features, persona)
+        features = await enrich_and_rescore_with_tnuos(features, persona)
     except Exception as exc:  # pragma: no cover - defensive guard
         print(f"⚠️ TNUoS enrichment skipped: {exc}")
 
