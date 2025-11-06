@@ -47,3 +47,7 @@ Thumbs.db
 # Project specific
 ml_recommendations.json
 recommended_datacenter_locations.json
+large_datacenter_dataset.csv
+*_datacenter_dataset.csv
+test_*_datacenters.csv
+scalability_test_results.json

@@ -4,6 +4,16 @@
 
 This MVP machine learning system analyzes your **existing data center locations** and their proximity to critical infrastructure to recommend optimal locations for **future data centers**.
 
+**✨ New: CSV Scalability Support!** Now supports testing with **1000+ data center sites** by reading from CSV files. See [CSV Scalability Guide](CSV_SCALABILITY_GUIDE.md) for details.
+
+### Key Features
+
+- ✅ **Scalable CSV Input**: Load 10 to 1500+ locations from CSV files
+- ✅ **Automated Testing**: Generate synthetic datasets for scalability testing
+- ✅ **Performance Optimized**: Sub-linear scaling with batch processing
+- ✅ **Flexible Format**: Supports multiple CSV column naming conventions
+- ✅ **Production Ready**: API endpoint integrated with existing infrastructure
+
 ## 🏗️ Architecture
 
 ### How It Works
@@ -65,7 +75,43 @@ This will:
 - Return top 15 recommendations
 - Save results to `ml_recommendations.json`
 
-### 3. API Endpoint
+## 📊 Working with CSV Files (1000+ Locations)
+
+### Load from Your CSV File
+
+```bash
+# Test with your own data center CSV
+python test_ml_endpoint.py your_datacenters.csv
+```
+
+**Required CSV columns:**
+- `Latitude` or `latitude` - Decimal degrees
+- `Longitude` or `longitude` - Decimal degrees
+- `Data Centre Name` or `name` - Facility name (optional)
+
+### Generate Large Test Datasets
+
+```bash
+# Generate 1500 synthetic data centers
+python generate_large_dataset.py 1500 test_dataset.csv
+
+# Test with generated dataset
+python test_ml_endpoint.py test_dataset.csv
+```
+
+### Run Scalability Tests
+
+Test performance with increasing dataset sizes (10 to 1500 locations):
+
+```bash
+python test_scalability.py
+```
+
+**Expected performance (1000 locations):** ~40-50s processing time
+
+📖 **See [CSV Scalability Guide](CSV_SCALABILITY_GUIDE.md) for detailed documentation**
+
+## 🔌 API Endpoint
 
 **Endpoint**: `POST /api/ml/datacenter-locations`
 

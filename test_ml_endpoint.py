@@ -1,29 +1,84 @@
 """
 Test script for ML-based data center location recommendations
 Run this after starting the FastAPI server
+
+Usage:
+    python test_ml_endpoint.py                          # Use default CSV
+    python test_ml_endpoint.py custom_datacenters.csv   # Use custom CSV
 """
 
 import requests
 import json
+import csv
+import sys
+from pathlib import Path
 
-# Your existing data center locations
-existing_datacenters = [
-    {"latitude": 57.1437, "longitude": -2.0981, "name": "IFB Union Street"},
-    {"latitude": 57.1378, "longitude": -2.1663, "name": "Brightsolid Aberdeen"},
-    {"latitude": 57.16, "longitude": -2.1567, "name": "Brightsolid data centre"},
-    {"latitude": 57.2111, "longitude": -2.2037, "name": "CNSFTC DATA CENTRE"},
-    {"latitude": 57.23273125, "longitude": -2.0789625, "name": "Unknown"},
-    {"latitude": 51.7634, "longitude": -0.2242, "name": "Computacentre"},
-]
+
+def load_datacenters_from_csv(csv_path: str) -> list:
+    """Load data center locations from CSV file"""
+    datacenters = []
+
+    print(f"📂 Loading data centers from: {csv_path}")
+
+    with open(csv_path, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+
+        for row in reader:
+            try:
+                lat = float(row.get('Latitude', row.get('latitude', 0)))
+                lon = float(row.get('Longitude', row.get('longitude', 0)))
+                name = row.get('Data Centre Name', row.get('name', row.get('Postcode', 'Unknown')))
+
+                if lat != 0 and lon != 0:  # Filter out invalid coordinates
+                    datacenters.append({
+                        "latitude": lat,
+                        "longitude": lon,
+                        "name": name.strip() if name else "Unknown"
+                    })
+            except (ValueError, KeyError) as e:
+                print(f"⚠️  Skipping invalid row: {e}")
+                continue
+
+    # Remove duplicates based on coordinates (within 0.001 degrees ~100m)
+    unique_datacenters = []
+    seen_coords = set()
+
+    for dc in datacenters:
+        coord_key = (round(dc['latitude'], 3), round(dc['longitude'], 3))
+        if coord_key not in seen_coords:
+            unique_datacenters.append(dc)
+            seen_coords.add(coord_key)
+
+    print(f"✅ Loaded {len(datacenters)} locations ({len(unique_datacenters)} unique)")
+    return unique_datacenters
+
+
+# Determine CSV file to use
+csv_file = sys.argv[1] if len(sys.argv) > 1 else "existing_datacenters.csv"
+
+if not Path(csv_file).exists():
+    print(f"❌ ERROR: CSV file not found: {csv_file}")
+    print(f"\nUsage: python test_ml_endpoint.py [csv_file]")
+    sys.exit(1)
+
+# Load data centers from CSV
+existing_datacenters = load_datacenters_from_csv(csv_file)
+
+if not existing_datacenters:
+    print("❌ ERROR: No valid data centers found in CSV")
+    sys.exit(1)
 
 # API endpoint
 url = "http://127.0.0.1:8000/api/ml/datacenter-locations"
 
-# Request payload
+# Request payload - adjust candidates based on training set size
+num_candidates = min(100, len(existing_datacenters) * 10)  # 10x training data
+top_n = min(15, max(10, len(existing_datacenters) // 2))  # At least 10, or half training set
+
 payload = {
     "existing_locations": existing_datacenters,
-    "num_candidates": 100,  # Test with 100 random locations
-    "top_n": 15,  # Get top 15 recommendations
+    "num_candidates": num_candidates,
+    "top_n": top_n,
 }
 
 print("=" * 80)
