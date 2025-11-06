@@ -269,6 +269,380 @@ PERSONA_CAPACITY_PARAMS = {
 }
 
 # ============================================================================
+# DYNAMIC WEIGHT GENERATION SYSTEM
+# ============================================================================
+# Enables users to generate custom weights from high-level inputs rather than
+# manually specifying all 7 weights. Supports priority-based, constraint-based,
+# persona blending, and goal-oriented weight generation.
+
+CRITERIA_KEYS = [
+    "capacity",
+    "connection_speed",
+    "resilience",
+    "land_planning",
+    "latency",
+    "cooling",
+    "price_sensitivity",
+]
+
+
+def validate_weights(weights: Dict[str, float]) -> Tuple[bool, Optional[str]]:
+    """
+    Validate that weights are properly formed and balanced.
+
+    Rules:
+    1. All 7 criteria must be present
+    2. All weights must be non-negative
+    3. Weights must sum to 1.0 (±0.001 tolerance)
+    4. No single weight > 0.5 (prevent over-concentration)
+    5. At least 3 weights must be > 0.05 (force diversity)
+
+    Returns:
+        (is_valid, error_message)
+    """
+    # Check all criteria present
+    missing = [key for key in CRITERIA_KEYS if key not in weights]
+    if missing:
+        return False, f"Missing criteria: {', '.join(missing)}"
+
+    # Check non-negative
+    negative = [k for k, v in weights.items() if v < 0]
+    if negative:
+        return False, f"Negative weights for: {', '.join(negative)}"
+
+    # Check sum
+    total = sum(weights.values())
+    if not math.isclose(total, 1.0, abs_tol=0.001):
+        return False, f"Weights sum to {total:.4f}, not 1.0"
+
+    # Check concentration
+    max_weight = max(weights.values())
+    if max_weight > 0.5:
+        max_key = max(weights.keys(), key=lambda k: weights[k])
+        return False, f"Single weight '{max_key}' = {max_weight:.3f} exceeds 50% limit"
+
+    # Check diversity
+    significant = [w for w in weights.values() if w > 0.05]
+    if len(significant) < 3:
+        return False, "At least 3 criteria must have >5% weight (diversity requirement)"
+
+    return True, None
+
+
+def normalize_weights(weights: Dict[str, float]) -> Dict[str, float]:
+    """
+    Normalize weights to sum to exactly 1.0.
+
+    If all weights are zero, returns equal distribution.
+    """
+    total = sum(weights.values())
+    if total == 0 or total < 1e-9:
+        # All zeros → equal distribution
+        return {k: 1.0 / len(CRITERIA_KEYS) for k in CRITERIA_KEYS}
+
+    return {k: v / total for k, v in weights.items()}
+
+
+def priorities_to_weights(
+    priorities: Dict[str, Union[int, float]],
+    base_persona: Optional[str] = None,
+    blend_factor: float = 0.0,
+) -> Dict[str, float]:
+    """
+    Convert user priority ratings to normalized weights.
+
+    Args:
+        priorities: Criteria importance (1=low importance, 5=critical).
+                   Missing criteria default to 3 (moderate).
+        base_persona: Optional persona to blend with (hyperscaler/colocation/edge_computing).
+        blend_factor: How much to blend with base persona (0=full custom, 1=full persona).
+                     Default 0 = use only user priorities.
+
+    Returns:
+        Normalized weights dict that sums to 1.0
+
+    Example:
+        >>> priorities_to_weights({"capacity": 5, "price_sensitivity": 5, "latency": 1})
+        {
+            "capacity": 0.227,
+            "connection_speed": 0.136,
+            "resilience": 0.136,
+            "land_planning": 0.136,
+            "latency": 0.045,
+            "cooling": 0.136,
+            "price_sensitivity": 0.227
+        }
+    """
+    # Fill in missing criteria with default priority 3
+    full_priorities = {k: priorities.get(k, 3.0) for k in CRITERIA_KEYS}
+
+    # Ensure all values are positive
+    full_priorities = {k: max(0.1, v) for k, v in full_priorities.items()}
+
+    # Convert priorities to initial weights (simple proportional)
+    total_priority = sum(full_priorities.values())
+    custom_weights = {k: v / total_priority for k, v in full_priorities.items()}
+
+    # Blend with base persona if requested
+    if base_persona and blend_factor > 0:
+        if base_persona in PERSONA_WEIGHTS:
+            base_weights = PERSONA_WEIGHTS[base_persona]
+            blended_weights = {
+                k: (1 - blend_factor) * custom_weights[k] + blend_factor * base_weights[k]
+                for k in CRITERIA_KEYS
+            }
+            return normalize_weights(blended_weights)
+
+    return custom_weights
+
+
+def constraints_to_weight_adjustments(
+    constraints: Dict[str, Any],
+    base_persona: Optional[str] = None,
+) -> Dict[str, float]:
+    """
+    Generate weights based on user constraints and requirements.
+
+    Analyzes constraints and adjusts weights to emphasize relevant criteria.
+
+    Args:
+        constraints: User requirements dict containing:
+            - capacity_required_mw: Required capacity
+            - max_price_mwh: Maximum acceptable price
+            - deployment_timeline_months: Time to deployment
+            - must_have_redundancy: Redundancy requirement
+            - latency_sensitive: Latency-critical workloads
+            - cooling_intensive: High cooling needs
+            - location_flexibility: 'low'/'medium'/'high'
+        base_persona: Starting persona (defaults to 'hyperscaler')
+
+    Returns:
+        Adjusted weights dict
+
+    Example:
+        >>> constraints_to_weight_adjustments({
+        ...     "max_price_mwh": 55,  # Below market
+        ...     "deployment_timeline_months": 12,  # Urgent
+        ...     "must_have_redundancy": True
+        ... })
+        # Returns weights with boosted price_sensitivity, land_planning, and resilience
+    """
+    # Start with base persona or default equal weights
+    if base_persona and base_persona in PERSONA_WEIGHTS:
+        weights = dict(PERSONA_WEIGHTS[base_persona])
+    else:
+        weights = {k: 1.0 / len(CRITERIA_KEYS) for k in CRITERIA_KEYS}
+
+    adjustments_log = []
+
+    # Budget constraint → boost price_sensitivity
+    if "max_price_mwh" in constraints:
+        max_price = float(constraints["max_price_mwh"])
+        market_avg = 70.0  # £/MWh typical UK market rate
+        if max_price < market_avg * 0.9:
+            # Budget-sensitive
+            boost_factor = 1 + (market_avg - max_price) / market_avg
+            weights["price_sensitivity"] *= boost_factor
+            adjustments_log.append(f"Boosted price_sensitivity by {boost_factor:.2f}x (budget £{max_price}/MWh < market avg)")
+
+    # Timeline constraint → boost land_planning and connection_speed
+    if "deployment_timeline_months" in constraints:
+        months = int(constraints["deployment_timeline_months"])
+        if months < 24:
+            # Fast deployment needed
+            urgency_factor = (24 - months) / 24  # 0-1 scale
+            weights["land_planning"] *= (1 + urgency_factor * 0.5)
+            weights["connection_speed"] *= (1 + urgency_factor * 0.3)
+            adjustments_log.append(f"Boosted land_planning & connection_speed (deployment in {months} months)")
+
+    # Capacity constraint → adjust capacity weight
+    if "capacity_required_mw" in constraints:
+        capacity = float(constraints["capacity_required_mw"])
+        if capacity > 100:
+            weights["capacity"] *= 1.3
+            adjustments_log.append(f"Boosted capacity weight (large deployment: {capacity} MW)")
+        elif capacity < 10:
+            weights["capacity"] *= 0.7
+            adjustments_log.append(f"Reduced capacity weight (small deployment: {capacity} MW)")
+
+    # Redundancy requirement → boost resilience
+    if constraints.get("must_have_redundancy"):
+        weights["resilience"] *= 1.5
+        weights["connection_speed"] *= 1.2  # Multiple connection options
+        adjustments_log.append("Boosted resilience & connection_speed (redundancy required)")
+
+    # Latency sensitivity → boost latency and related
+    if constraints.get("latency_sensitive"):
+        weights["latency"] *= 2.0
+        weights["cooling"] *= 1.2  # Better cooling improves performance
+        adjustments_log.append("Boosted latency & cooling (latency-sensitive workloads)")
+
+    # Cooling intensive → boost cooling weight
+    if constraints.get("cooling_intensive"):
+        weights["cooling"] *= 1.8
+        adjustments_log.append("Boosted cooling (high-density/cooling-intensive)")
+
+    # Location flexibility → adjust geographic criteria
+    location_flex = constraints.get("location_flexibility", "medium")
+    if location_flex == "low":
+        # Must be in specific location → boost latency, cooling (pick best site)
+        weights["latency"] *= 1.3
+        weights["cooling"] *= 1.3
+        adjustments_log.append("Boosted latency & cooling (low location flexibility)")
+    elif location_flex == "high":
+        # Very flexible → can prioritize price
+        weights["price_sensitivity"] *= 1.2
+        adjustments_log.append("Boosted price_sensitivity (high location flexibility)")
+
+    # Normalize to sum to 1.0
+    normalized = normalize_weights(weights)
+
+    # Log adjustments
+    if adjustments_log:
+        print("🔧 Weight adjustments applied:")
+        for log in adjustments_log:
+            print(f"   • {log}")
+
+    return normalized
+
+
+def blend_persona_weights(
+    persona_mix: Dict[str, float],
+    personas_dict: Optional[Dict[str, Dict[str, float]]] = None,
+) -> Dict[str, float]:
+    """
+    Blend multiple persona weights with user-specified ratios.
+
+    Args:
+        persona_mix: Dict mapping persona names to blend ratios.
+                    Example: {"hyperscaler": 0.6, "colocation": 0.4}
+        personas_dict: Optional custom personas dict (defaults to PERSONA_WEIGHTS)
+
+    Returns:
+        Blended weights dict
+
+    Example:
+        >>> blend_persona_weights({"hyperscaler": 0.7, "edge_computing": 0.3})
+        # Returns 70% hyperscaler + 30% edge_computing weights
+    """
+    if personas_dict is None:
+        personas_dict = PERSONA_WEIGHTS
+
+    # Normalize blend ratios to sum to 1.0
+    total_ratio = sum(persona_mix.values())
+    if total_ratio == 0:
+        return {k: 1.0 / len(CRITERIA_KEYS) for k in CRITERIA_KEYS}
+
+    normalized_mix = {k: v / total_ratio for k, v in persona_mix.items()}
+
+    # Initialize blended weights
+    blended = {k: 0.0 for k in CRITERIA_KEYS}
+
+    # Weighted sum of persona weights
+    for persona_name, ratio in normalized_mix.items():
+        if persona_name in personas_dict:
+            persona_weights = personas_dict[persona_name]
+            for criterion in CRITERIA_KEYS:
+                blended[criterion] += ratio * persona_weights.get(criterion, 0.0)
+        else:
+            print(f"⚠️ Unknown persona '{persona_name}' in blend, skipping")
+
+    # Ensure normalization (should already be normalized, but safety check)
+    return normalize_weights(blended)
+
+
+def optimize_weights_for_goals(
+    goals: List[Dict[str, Any]],
+) -> Dict[str, float]:
+    """
+    Generate weights optimized for multiple user-defined goals.
+
+    Args:
+        goals: List of goal dicts with 'objective' and 'importance' (0-1).
+              Example: [
+                  {"objective": "minimize_deployment_time", "importance": 0.5},
+                  {"objective": "minimize_total_cost", "importance": 0.3},
+                  {"objective": "maximize_reliability", "importance": 0.2}
+              ]
+
+    Returns:
+        Optimized weights dict
+
+    Supported objectives:
+        - minimize_deployment_time → land_planning, connection_speed
+        - minimize_total_cost → price_sensitivity
+        - maximize_reliability → resilience, cooling, connection_speed
+        - minimize_latency → latency, connection_speed
+        - maximize_capacity → capacity
+        - maximize_flexibility → land_planning, resilience
+    """
+    # Map objectives to criteria weights
+    OBJECTIVE_MAPPINGS = {
+        "minimize_deployment_time": {
+            "land_planning": 0.5,
+            "connection_speed": 0.3,
+            "resilience": 0.1,
+            "capacity": 0.1,
+        },
+        "minimize_total_cost": {
+            "price_sensitivity": 0.6,
+            "capacity": 0.2,
+            "land_planning": 0.2,
+        },
+        "maximize_reliability": {
+            "resilience": 0.4,
+            "cooling": 0.25,
+            "connection_speed": 0.25,
+            "latency": 0.1,
+        },
+        "minimize_latency": {
+            "latency": 0.6,
+            "connection_speed": 0.3,
+            "cooling": 0.1,
+        },
+        "maximize_capacity": {
+            "capacity": 0.7,
+            "connection_speed": 0.2,
+            "resilience": 0.1,
+        },
+        "maximize_flexibility": {
+            "land_planning": 0.4,
+            "resilience": 0.3,
+            "connection_speed": 0.2,
+            "capacity": 0.1,
+        },
+    }
+
+    # Normalize goal importances
+    total_importance = sum(goal.get("importance", 1.0) for goal in goals)
+    if total_importance == 0:
+        return {k: 1.0 / len(CRITERIA_KEYS) for k in CRITERIA_KEYS}
+
+    # Initialize weights
+    weights = {k: 0.0 for k in CRITERIA_KEYS}
+
+    # Combine objectives weighted by importance
+    for goal in goals:
+        objective = goal.get("objective", "")
+        importance = goal.get("importance", 1.0) / total_importance
+
+        if objective in OBJECTIVE_MAPPINGS:
+            objective_weights = OBJECTIVE_MAPPINGS[objective]
+            for criterion, weight in objective_weights.items():
+                weights[criterion] += importance * weight
+        else:
+            print(f"⚠️ Unknown objective '{objective}', skipping")
+
+    # Fill in any zero weights with small values for diversity
+    min_weight = 0.02
+    for k in CRITERIA_KEYS:
+        if weights[k] == 0:
+            weights[k] = min_weight
+
+    return normalize_weights(weights)
+
+
+# ============================================================================
 # HARD-CODED TNUoS ZONES (No DB calls needed)
 # ============================================================================
 
@@ -2371,6 +2745,294 @@ async def health() -> Dict[str, Any]:
     except Exception as exc:  # pragma: no cover - diagnostic logging
         print(f"❌ Database error: {exc}")
         return {"status": "degraded", "database": "disconnected", "error": str(exc)}
+
+
+# ============================================================================
+# DYNAMIC WEIGHT GENERATION API ENDPOINTS
+# ============================================================================
+
+@app.post("/api/weights/from-priorities")
+async def generate_weights_from_priorities(
+    priorities: Dict[str, Union[int, float]] = Body(..., example={
+        "capacity": 4,
+        "connection_speed": 5,
+        "resilience": 3,
+        "land_planning": 4,
+        "latency": 2,
+        "cooling": 3,
+        "price_sensitivity": 5
+    }),
+    base_persona: Optional[PersonaType] = Body(None),
+    blend_factor: float = Body(0.0, ge=0.0, le=1.0),
+) -> Dict[str, Any]:
+    """
+    Generate custom weights from priority ratings (1-5 scale).
+
+    User specifies importance of each criterion on a 1-5 scale:
+    - 1: Low importance
+    - 2: Below average
+    - 3: Moderate (default for unspecified)
+    - 4: Important
+    - 5: Critical
+
+    Optional blending with base persona allows hybrid approaches.
+
+    Returns:
+        {
+            "weights": {...},
+            "methodology": "priority-based",
+            "validation": {"valid": true},
+            "sum": 1.0
+        }
+    """
+    try:
+        print(f"🎯 Generating weights from priorities: {priorities}")
+
+        # Generate weights
+        weights = priorities_to_weights(priorities, base_persona, blend_factor)
+
+        # Validate
+        is_valid, error_msg = validate_weights(weights)
+
+        methodology = "priority-based"
+        if base_persona and blend_factor > 0:
+            methodology += f" with {blend_factor*100:.0f}% {base_persona} blend"
+
+        return {
+            "weights": {k: round(v, 4) for k, v in weights.items()},
+            "methodology": methodology,
+            "validation": {
+                "valid": is_valid,
+                "error": error_msg if not is_valid else None
+            },
+            "sum": round(sum(weights.values()), 6),
+            "input_priorities": priorities,
+            "base_persona": base_persona,
+            "blend_factor": blend_factor
+        }
+
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to generate weights: {str(exc)}")
+
+
+@app.post("/api/weights/from-constraints")
+async def generate_weights_from_constraints(
+    constraints: Dict[str, Any] = Body(..., example={
+        "capacity_required_mw": 50,
+        "max_price_mwh": 65,
+        "deployment_timeline_months": 18,
+        "must_have_redundancy": True,
+        "location_flexibility": "low"
+    }),
+    base_persona: Optional[PersonaType] = Body(None),
+) -> Dict[str, Any]:
+    """
+    Generate custom weights based on constraints and requirements.
+
+    Analyzes user constraints and adjusts weights to emphasize relevant criteria.
+
+    Supported constraints:
+    - capacity_required_mw: Required capacity
+    - max_price_mwh: Maximum acceptable price
+    - deployment_timeline_months: Time to deployment
+    - must_have_redundancy: Redundancy requirement (bool)
+    - latency_sensitive: Latency-critical workloads (bool)
+    - cooling_intensive: High cooling needs (bool)
+    - location_flexibility: 'low'/'medium'/'high'
+
+    Returns:
+        {
+            "weights": {...},
+            "methodology": "constraint-based optimization",
+            "adjustments_applied": [...],
+            "base_persona": "hyperscaler"
+        }
+    """
+    try:
+        print(f"🎯 Generating weights from constraints: {constraints}")
+
+        # Generate weights
+        weights = constraints_to_weight_adjustments(constraints, base_persona)
+
+        # Validate
+        is_valid, error_msg = validate_weights(weights)
+
+        # Determine which adjustments would be applied (for reporting)
+        adjustments_applied = []
+
+        if "max_price_mwh" in constraints:
+            max_price = constraints["max_price_mwh"]
+            if max_price < 63:  # 90% of 70
+                adjustments_applied.append({
+                    "criterion": "price_sensitivity",
+                    "reason": f"Budget £{max_price}/MWh below market average",
+                    "direction": "increased"
+                })
+
+        if "deployment_timeline_months" in constraints:
+            months = constraints["deployment_timeline_months"]
+            if months < 24:
+                adjustments_applied.append({
+                    "criterion": "land_planning",
+                    "reason": f"Fast deployment needed ({months} months)",
+                    "direction": "increased"
+                })
+
+        if constraints.get("must_have_redundancy"):
+            adjustments_applied.append({
+                "criterion": "resilience",
+                "reason": "Redundancy required",
+                "direction": "increased"
+            })
+
+        if constraints.get("latency_sensitive"):
+            adjustments_applied.append({
+                "criterion": "latency",
+                "reason": "Latency-sensitive workloads",
+                "direction": "increased"
+            })
+
+        if constraints.get("cooling_intensive"):
+            adjustments_applied.append({
+                "criterion": "cooling",
+                "reason": "High-density/cooling-intensive",
+                "direction": "increased"
+            })
+
+        return {
+            "weights": {k: round(v, 4) for k, v in weights.items()},
+            "methodology": "constraint-based optimization",
+            "validation": {
+                "valid": is_valid,
+                "error": error_msg if not is_valid else None
+            },
+            "adjustments_applied": adjustments_applied,
+            "input_constraints": constraints,
+            "base_persona": base_persona or "equal baseline",
+            "sum": round(sum(weights.values()), 6)
+        }
+
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to generate weights: {str(exc)}")
+
+
+@app.post("/api/weights/blend-personas")
+async def blend_personas(
+    persona_blend: Dict[str, float] = Body(..., example={
+        "hyperscaler": 0.6,
+        "colocation": 0.4
+    })
+) -> Dict[str, Any]:
+    """
+    Blend multiple persona weights with specified ratios.
+
+    Useful for hybrid use cases combining characteristics of multiple personas.
+
+    Example: 60% hyperscaler + 40% colocation for a hybrid cloud provider.
+
+    Returns:
+        {
+            "weights": {...},
+            "methodology": "persona blending",
+            "persona_blend": {...}
+        }
+    """
+    try:
+        print(f"🎯 Blending personas: {persona_blend}")
+
+        # Generate blended weights
+        weights = blend_persona_weights(persona_blend)
+
+        # Validate
+        is_valid, error_msg = validate_weights(weights)
+
+        # Normalize blend ratios for reporting
+        total_ratio = sum(persona_blend.values())
+        normalized_blend = {k: v / total_ratio for k, v in persona_blend.items()} if total_ratio > 0 else {}
+
+        return {
+            "weights": {k: round(v, 4) for k, v in weights.items()},
+            "methodology": "persona blending",
+            "validation": {
+                "valid": is_valid,
+                "error": error_msg if not is_valid else None
+            },
+            "persona_blend": {k: round(v, 3) for k, v in normalized_blend.items()},
+            "sum": round(sum(weights.values()), 6)
+        }
+
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to blend personas: {str(exc)}")
+
+
+@app.post("/api/weights/optimize-for-goals")
+async def optimize_for_goals(
+    goals: List[Dict[str, Any]] = Body(..., example=[
+        {"objective": "minimize_deployment_time", "importance": 0.5},
+        {"objective": "minimize_total_cost", "importance": 0.3},
+        {"objective": "maximize_reliability", "importance": 0.2}
+    ])
+) -> Dict[str, Any]:
+    """
+    Generate weights optimized for multiple user-defined goals.
+
+    Supported objectives:
+    - minimize_deployment_time: Focus on fast deployment (land_planning, connection_speed)
+    - minimize_total_cost: Focus on lowest TCO (price_sensitivity)
+    - maximize_reliability: Focus on redundancy (resilience, cooling, connection_speed)
+    - minimize_latency: Focus on low-latency performance (latency, connection_speed)
+    - maximize_capacity: Focus on largest available capacity (capacity)
+    - maximize_flexibility: Focus on deployment flexibility (land_planning, resilience)
+
+    Each goal has an importance weight (should sum to 1.0, will auto-normalize if not).
+
+    Returns:
+        {
+            "weights": {...},
+            "methodology": "goal-oriented optimization",
+            "goals": [...]
+        }
+    """
+    try:
+        print(f"🎯 Optimizing weights for goals: {goals}")
+
+        # Generate weights
+        weights = optimize_weights_for_goals(goals)
+
+        # Validate
+        is_valid, error_msg = validate_weights(weights)
+
+        # Normalize goal importances for reporting
+        total_importance = sum(goal.get("importance", 1.0) for goal in goals)
+        normalized_goals = [
+            {
+                "objective": g.get("objective"),
+                "importance": g.get("importance", 1.0) / total_importance if total_importance > 0 else 0
+            }
+            for g in goals
+        ]
+
+        return {
+            "weights": {k: round(v, 4) for k, v in weights.items()},
+            "methodology": "goal-oriented optimization",
+            "validation": {
+                "valid": is_valid,
+                "error": error_msg if not is_valid else None
+            },
+            "goals": normalized_goals,
+            "sum": round(sum(weights.values()), 6),
+            "supported_objectives": [
+                "minimize_deployment_time",
+                "minimize_total_cost",
+                "maximize_reliability",
+                "minimize_latency",
+                "maximize_capacity",
+                "maximize_flexibility"
+            ]
+        }
+
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to optimize weights: {str(exc)}")
 
 
 @app.get("/api/projects")
