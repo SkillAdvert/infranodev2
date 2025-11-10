@@ -28,12 +28,20 @@ from backend.dc_workflow import (
     PERSONA_CAPACITY_RANGES,
     PERSONA_WEIGHTS,
     PersonaType,
-    build_persona_component_scores,
     calculate_best_customer_match,
     calculate_custom_weighted_score,
     calculate_persona_topsis_score,
     calculate_persona_weighted_score,
+)
+from backend.scoring.algorithms import (
+    KM_PER_DEGREE_LAT,
+    TNUOS_ZONES_HARDCODED,
+    build_persona_component_scores,
+    calculate_proximity_scores_batch,
+    calculate_tnuos_score_from_tariff,
+    enrich_and_rescore_with_tnuos,
     filter_projects_by_persona_capacity,
+    find_tnuos_zone,
     get_color_from_score,
     get_rating_description,
 )
@@ -81,151 +89,12 @@ SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
 print(f"✅ SUPABASE_URL: {SUPABASE_URL}")
 print(f"✅ SUPABASE_KEY exists: {bool(SUPABASE_KEY)}")
 
-KM_PER_DEGREE_LAT = 111.32
+# KM_PER_DEGREE_LAT and TNUOS_ZONES_HARDCODED now imported from backend.scoring.algorithms
 INFRASTRUCTURE_CACHE_TTL_SECONDS = int(os.getenv("INFRA_CACHE_TTL", "600"))
 GRID_CELL_DEGREES = 0.5
 
-# ============================================================================
-# HARD-CODED TNUoS ZONES (No DB calls needed)
-# ============================================================================
-
-TNUOS_ZONES_HARDCODED = {
-    "GZ1": {
-        "name": "North Scotland",
-        "tariff": 15.32,
-        "bounds": {"min_lat": 57.5, "max_lat": 61.0, "min_lng": -6.0, "max_lng": -1.5},
-    },
-    "GZ2": {
-        "name": "South Scotland",
-        "tariff": 14.87,
-        "bounds": {"min_lat": 55.0, "max_lat": 57.5, "min_lng": -4.0, "max_lng": -1.5},
-    },
-    "GZ3": {
-        "name": "Borders",
-        "tariff": 13.45,
-        "bounds": {"min_lat": 54.5, "max_lat": 56.0, "min_lng": -4.0, "max_lng": -1.5},
-    },
-    "GZ4": {
-        "name": "Central Scotland",
-        "tariff": 12.98,
-        "bounds": {"min_lat": 55.5, "max_lat": 56.5, "min_lng": -5.0, "max_lng": -3.0},
-    },
-    "GZ5": {
-        "name": "Argyll",
-        "tariff": 11.67,
-        "bounds": {"min_lat": 55.0, "max_lat": 57.0, "min_lng": -6.0, "max_lng": -4.0},
-    },
-    "GZ6": {
-        "name": "Dumfries",
-        "tariff": 10.34,
-        "bounds": {"min_lat": 54.5, "max_lat": 55.5, "min_lng": -4.5, "max_lng": -2.5},
-    },
-    "GZ7": {
-        "name": "Ayr",
-        "tariff": 9.87,
-        "bounds": {"min_lat": 54.8, "max_lat": 55.5, "min_lng": -5.0, "max_lng": -3.5},
-    },
-    "GZ8": {
-        "name": "Central Belt",
-        "tariff": 8.92,
-        "bounds": {"min_lat": 55.2, "max_lat": 56.0, "min_lng": -4.5, "max_lng": -3.0},
-    },
-    "GZ9": {
-        "name": "Lothian",
-        "tariff": 7.56,
-        "bounds": {"min_lat": 55.5, "max_lat": 56.2, "min_lng": -3.5, "max_lng": -2.0},
-    },
-    "GZ10": {
-        "name": "Southern Scotland",
-        "tariff": 6.23,
-        "bounds": {"min_lat": 54.8, "max_lat": 55.5, "min_lng": -3.5, "max_lng": -1.5},
-    },
-    "GZ11": {
-        "name": "North East England",
-        "tariff": 5.67,
-        "bounds": {"min_lat": 54.0, "max_lat": 55.5, "min_lng": -3.0, "max_lng": -0.5},
-    },
-    "GZ12": {
-        "name": "Yorkshire",
-        "tariff": 4.89,
-        "bounds": {"min_lat": 53.0, "max_lat": 54.5, "min_lng": -3.0, "max_lng": -0.5},
-    },
-    "GZ13": {
-        "name": "Humber",
-        "tariff": 4.12,
-        "bounds": {"min_lat": 52.5, "max_lat": 53.5, "min_lng": -2.0, "max_lng": 0.5},
-    },
-    "GZ14": {
-        "name": "North West England",
-        "tariff": 3.78,
-        "bounds": {"min_lat": 52.5, "max_lat": 54.5, "min_lng": -3.5, "max_lng": -1.5},
-    },
-    "GZ15": {
-        "name": "East Midlands",
-        "tariff": 2.95,
-        "bounds": {"min_lat": 51.5, "max_lat": 53.0, "min_lng": -2.5, "max_lng": 0.0},
-    },
-    "GZ16": {
-        "name": "West Midlands",
-        "tariff": 2.34,
-        "bounds": {"min_lat": 51.5, "max_lat": 52.7, "min_lng": -3.0, "max_lng": -1.5},
-    },
-    "GZ17": {
-        "name": "East England",
-        "tariff": 1.87,
-        "bounds": {"min_lat": 51.5, "max_lat": 52.5, "min_lng": -0.5, "max_lng": 1.5},
-    },
-    "GZ18": {
-        "name": "South Wales",
-        "tariff": 1.45,
-        "bounds": {"min_lat": 51.2, "max_lat": 52.0, "min_lng": -3.5, "max_lng": -2.0},
-    },
-    "GZ19": {
-        "name": "North Wales",
-        "tariff": 0.98,
-        "bounds": {"min_lat": 52.3, "max_lat": 53.5, "min_lng": -3.8, "max_lng": -2.8},
-    },
-    "GZ20": {
-        "name": "Pembroke",
-        "tariff": 0.67,
-        "bounds": {"min_lat": 51.6, "max_lat": 52.1, "min_lng": -5.5, "max_lng": -4.8},
-    },
-    "GZ21": {
-        "name": "South West England",
-        "tariff": -0.12,
-        "bounds": {"min_lat": 50.5, "max_lat": 51.5, "min_lng": -4.5, "max_lng": -2.0},
-    },
-    "GZ22": {
-        "name": "Cornwall",
-        "tariff": -0.45,
-        "bounds": {"min_lat": 49.9, "max_lat": 50.7, "min_lng": -5.5, "max_lng": -4.5},
-    },
-    "GZ23": {
-        "name": "London",
-        "tariff": -0.78,
-        "bounds": {"min_lat": 51.2, "max_lat": 51.8, "min_lng": -0.5, "max_lng": 0.5},
-    },
-    "GZ24": {
-        "name": "South East England",
-        "tariff": -1.23,
-        "bounds": {"min_lat": 50.5, "max_lat": 51.5, "min_lng": -2.0, "max_lng": 1.5},
-    },
-    "GZ25": {
-        "name": "Kent",
-        "tariff": -1.56,
-        "bounds": {"min_lat": 50.8, "max_lat": 51.5, "min_lng": 0.2, "max_lng": 1.8},
-    },
-    "GZ26": {
-        "name": "Southern England",
-        "tariff": -1.89,
-        "bounds": {"min_lat": 50.5, "max_lat": 51.2, "min_lng": -2.5, "max_lng": 0.0},
-    },
-    "GZ27": {
-        "name": "Solent",
-        "tariff": -2.34,
-        "bounds": {"min_lat": 50.6, "max_lat": 51.0, "min_lng": -2.0, "max_lng": -1.0},
-    },
-}
+# NOTE: TNUOS_ZONES_HARDCODED now imported from backend.scoring.algorithms
+# The version in algorithms.py has 12 zones - if more zones are needed, update algorithms.py
 
 LCOE_CONFIG = {
     "baseline_pounds_per_mwh": 60.0,
@@ -235,149 +104,8 @@ LCOE_CONFIG = {
     "zone_specific_rates": {},
 }
 
-
-def find_tnuos_zone(latitude: float, longitude: float) -> Optional[Dict[str, Any]]:
-    """Find TNUoS zone for given coordinates using hard-coded bounding boxes."""
-
-    for zone_id, zone_data in TNUOS_ZONES_HARDCODED.items():
-        bounds = zone_data["bounds"]
-
-        if (
-            bounds["min_lat"] <= latitude <= bounds["max_lat"]
-            and bounds["min_lng"] <= longitude <= bounds["max_lng"]
-        ):
-            return {
-                "zone_id": zone_id,
-                "zone_name": zone_data["name"],
-                "generation_tariff_pounds_per_kw": zone_data["tariff"],
-            }
-
-    return None
-
-
-def calculate_tnuos_score_from_tariff(tariff: float) -> float:
-    """Convert TNUoS tariff (£/kW) to 0-100 investment score."""
-
-    min_tariff = -3.0
-    max_tariff = 16.0
-
-    if tariff <= min_tariff:
-        return 100.0
-    if tariff >= max_tariff:
-        return 0.0
-
-    normalized = (tariff - min_tariff) / (max_tariff - min_tariff)
-    return 100.0 * (1.0 - normalized)
-
-
-async def enrich_and_rescore_with_tnuos(
-    features: List[Dict[str, Any]],
-    persona: Optional[PersonaType] = None,
-) -> List[Dict[str, Any]]:
-    """Enrich projects with TNUoS data and adjust scores."""
-
-    if not features:
-        return features
-
-    features_sorted = sorted(
-        features,
-        key=lambda feature: feature.get("properties", {}).get("investment_rating", 0),
-        reverse=True,
-    )
-
-    print("📊 Enriching projects with TNUoS zones...")
-
-    enriched_count = 100
-
-    for feature in features_sorted:
-        properties = feature.setdefault("properties", {})
-
-        try:
-            coordinates = feature.get("geometry", {}).get("coordinates", [])
-            if len(coordinates) < 2:
-                properties["tnuos_enriched"] = False
-                continue
-
-            longitude, latitude = coordinates[0], coordinates[1]
-            zone = find_tnuos_zone(latitude, longitude)
-
-            if not zone:
-                properties["tnuos_enriched"] = False
-                continue
-
-            properties["tnuos_zone_id"] = zone["zone_id"]
-            properties["tnuos_zone_name"] = zone["zone_name"]
-            tariff_value = zone["generation_tariff_pounds_per_kw"]
-            properties["tnuos_tariff_pounds_per_kw"] = tariff_value
-
-            tnuos_score = calculate_tnuos_score_from_tariff(tariff_value)
-            properties["tnuos_score"] = round(tnuos_score, 1)
-
-            old_rating = float(properties.get("investment_rating", 0.0))
-            component_scores = dict(properties.get("component_scores") or {})
-            component_scores["tnuos_transmission_costs"] = tnuos_score
-
-            weights = dict(
-                PERSONA_WEIGHTS.get(persona or "hyperscaler", PERSONA_WEIGHTS["hyperscaler"])
-            )
-            if "tnuos_transmission_costs" not in weights:
-                fallback_weight = 0.1
-                existing_total = sum(weights.values()) or 1.0
-                weights = {
-                    key: (value / existing_total) * (1.0 - fallback_weight)
-                    for key, value in weights.items()
-                }
-                weights["tnuos_transmission_costs"] = fallback_weight
-
-            total_weight = sum(weights.values()) or 1.0
-            if not math.isclose(total_weight, 1.0, rel_tol=1e-6):
-                weights = {key: value / total_weight for key, value in weights.items()}
-
-            weighted_score = sum(
-                (component_scores.get(key, 0.0) or 0.0) * weight
-                for key, weight in weights.items()
-            )
-
-            weighted_score = max(0.0, min(100.0, weighted_score))
-            new_rating = round(weighted_score / 10.0, 1)
-
-            properties["component_scores"] = {
-                key: round(value, 1) for key, value in component_scores.items()
-            }
-
-            weighted_contributions = dict(properties.get("weighted_contributions") or {})
-            weighted_contributions = {
-                key: round((component_scores.get(key, 0.0) or 0.0) * weights.get(key, 0.0), 1)
-                for key in component_scores
-            }
-
-            properties["weighted_contributions"] = weighted_contributions
-            properties["investment_rating"] = new_rating
-            properties["internal_total_score"] = round(weighted_score, 1)
-            properties["tnuos_enriched"] = True
-            properties["rating_change"] = round(new_rating - old_rating, 1)
-
-            if abs(new_rating - old_rating) > 0.2:
-                site_name = properties.get("site_name", "Project")
-                print(
-                    f"  • {site_name}: {old_rating:.1f} → {new_rating:.1f} ({zone['zone_name']})"
-                )
-
-            enriched_count += 1
-        except Exception as exc:  # pragma: no cover - defensive guard
-            print(f"⚠️  Error processing project: {exc}")
-            properties["tnuos_enriched"] = False
-
-    print(f"✓ Enriched {enriched_count}/{len(features_sorted)} projects")
-
-    resorted_features = sorted(
-        features_sorted,
-        key=lambda feature: feature.get("properties", {}).get("investment_rating", 0),
-        reverse=True,
-    )
-
-    return resorted_features
-
+# NOTE: find_tnuos_zone, calculate_tnuos_score_from_tariff, and enrich_and_rescore_with_tnuos
+# are now imported from backend.scoring.algorithms
 
 class UserSite(BaseModel):
     site_name: str
