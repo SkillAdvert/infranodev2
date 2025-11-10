@@ -41,6 +41,14 @@ except ImportError as exc:  # pragma: no cover - handled dynamically at runtime
     print(f"Error initializing renewable financial model components: {exc}")
     FINANCIAL_MODEL_AVAILABLE = False
 
+try:
+    print("Loading data center demand workflow components...")
+    from backend.demand_workflow import score_user_sites as score_user_sites_impl, UserSite
+    print("[\u2713] Data center demand workflow components loaded successfully")
+except ImportError as exc:  # pragma: no cover - handled dynamically at runtime
+    print(f"Error initializing demand workflow components: {exc}")
+    raise
+
 print("Initializing FastAPI renderer...")
 _api_start_time = time.time()
 app = FastAPI(title="Infranodal API", version="2.1.0")
@@ -562,16 +570,7 @@ async def enrich_and_rescore_with_tnuos(
     return resorted_features
 
 
-class UserSite(BaseModel):
-    site_name: str
-    technology_type: str
-    capacity_mw: float
-    latitude: float
-    longitude: float
-    commissioning_year: int
-    is_btm: bool
-    capacity_factor: Optional[float] = None
-    development_status_short: Optional[str] = "planning"
+# UserSite is now imported from backend.demand_workflow
 
 
 class FinancialModelRequest(BaseModel):
@@ -2477,103 +2476,19 @@ async def score_user_sites(
     sites: List[UserSite],
     persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring"),
 ) -> Dict[str, Any]:
-    if not sites:
-        raise HTTPException(400, "No sites provided")
+    """
+    Data center developer workflow endpoint - scores user-submitted sites.
 
-    for index, site in enumerate(sites):
-        if not (49.8 <= site.latitude <= 60.9) or not (-10.8 <= site.longitude <= 2.0):
-            raise HTTPException(400, f"Site {index + 1}: Coordinates outside UK bounds")
-        if not (5 <= site.capacity_mw <= 500):
-            raise HTTPException(400, f"Site {index + 1}: Capacity must be between 5-500 MW")
-        if not (2025 <= site.commissioning_year <= 2035):
-            raise HTTPException(400, f"Site {index + 1}: Commissioning year must be between 2025-2035")
-
-    scoring_mode = "persona-based" if persona else "renewable energy"
-    print(f"🔄 Scoring {len(sites)} user-submitted sites with {scoring_mode.upper()} system...")
-    start_time = time.time()
-
-    sites_for_calc: List[Dict[str, Any]] = []
-    for site in sites:
-        sites_for_calc.append(
-            {
-                "site_name": site.site_name,
-                "technology_type": site.technology_type,
-                "capacity_mw": site.capacity_mw,
-                "latitude": site.latitude,
-                "longitude": site.longitude,
-                "commissioning_year": site.commissioning_year,
-                "is_btm": site.is_btm,
-                "development_status_short": site.development_status_short or "planning",
-                "capacity_factor": site.capacity_factor,
-            }
-        )
-
-    proximity_scores = await calculate_proximity_scores_batch(sites_for_calc)
-
-    scored_sites: List[Dict[str, Any]] = []
-    for index, site_data in enumerate(sites_for_calc):
-        prox_scores = (
-            proximity_scores[index]
-            if index < len(proximity_scores)
-            else {
-                "substation_score": 0.0,
-                "transmission_score": 0.0,
-                "fiber_score": 0.0,
-                "ixp_score": 0.0,
-                "water_score": 0.0,
-                "total_proximity_bonus": 0.0,
-                "nearest_distances": {},
-            }
-        )
-        if persona:
-            rating_result = calculate_persona_weighted_score(site_data, prox_scores, persona, "demand", None, None)
-        else:
-            rating_result = calculate_enhanced_investment_rating(site_data, prox_scores)
-
-        scored_sites.append(
-            {
-                "site_name": site_data["site_name"],
-                "technology_type": site_data["technology_type"],
-                "capacity_mw": site_data["capacity_mw"],
-                "commissioning_year": site_data["commissioning_year"],
-                "is_btm": site_data["is_btm"],
-                "coordinates": [site_data["longitude"], site_data["latitude"]],
-                "investment_rating": rating_result["investment_rating"],
-                "rating_description": rating_result["rating_description"],
-                "color_code": rating_result["color_code"],
-                "component_scores": rating_result.get("component_scores"),
-                "weighted_contributions": rating_result.get("weighted_contributions"),
-                "persona": rating_result.get("persona"),
-                "base_score": rating_result.get("base_investment_score", rating_result["investment_rating"]),
-                "infrastructure_bonus": rating_result.get("infrastructure_bonus", 0.0),
-                "nearest_infrastructure": rating_result["nearest_infrastructure"],
-                "methodology": f"{scoring_mode} scoring system",
-            }
-        )
-
-    processing_time = time.time() - start_time
-    print(f"✅ User sites scored with {scoring_mode.upper()} SYSTEM in {processing_time:.2f}s")
-
-    return {
-        "sites": scored_sites,
-        "metadata": {
-            "scoring_system": f"{scoring_mode} - 1.0-10.0 Investment Rating Scale",
-            "persona": persona,
-            "processing_time_seconds": round(processing_time, 2),
-            "algorithm_version": "2.1 - Persona-Based Infrastructure Proximity Enhanced",
-            "rating_scale": {
-                "9.0-10.0": "Excellent - Premium investment opportunity",
-                "8.0-8.9": "Very Good - Strong investment potential",
-                "7.0-7.9": "Good - Solid investment opportunity",
-                "6.0-6.9": "Above Average - Moderate investment potential",
-                "5.0-5.9": "Average - Standard investment opportunity",
-                "4.0-4.9": "Below Average - Limited investment appeal",
-                "3.0-3.9": "Poor - Significant investment challenges",
-                "2.0-2.9": "Very Poor - High risk investment",
-                "1.0-1.9": "Bad - Unfavorable investment conditions",
-            },
-        },
-    }
+    This endpoint has been extracted to backend.demand_workflow.datacenter_scoring
+    for better modularity and maintainability.
+    """
+    return await score_user_sites_impl(
+        sites=sites,
+        persona=persona,
+        calculate_proximity_scores_batch=calculate_proximity_scores_batch,
+        calculate_persona_weighted_score=calculate_persona_weighted_score,
+        calculate_enhanced_investment_rating=calculate_enhanced_investment_rating,
+    )
 
 
 @app.get("/api/projects/enhanced")
