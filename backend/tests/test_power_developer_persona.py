@@ -6,7 +6,10 @@ import pytest
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 try:
-    from main import POWER_DEVELOPER_PERSONAS, resolve_power_developer_persona
+    from backend.power_workflow import (
+        POWER_DEVELOPER_PERSONAS,
+        resolve_power_developer_persona,
+    )
 except ModuleNotFoundError as exc:  # pragma: no cover - environment dependent
     pytest.skip(f"main.py dependencies missing: {exc}", allow_module_level=True)
 
