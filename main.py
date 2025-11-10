@@ -28,12 +28,20 @@ from backend.dc_workflow import (
     PERSONA_CAPACITY_RANGES,
     PERSONA_WEIGHTS,
     PersonaType,
-    build_persona_component_scores,
     calculate_best_customer_match,
     calculate_custom_weighted_score,
     calculate_persona_topsis_score,
     calculate_persona_weighted_score,
+)
+from backend.scoring.algorithms import (
+    KM_PER_DEGREE_LAT,
+    TNUOS_ZONES_HARDCODED,
+    build_persona_component_scores,
+    calculate_proximity_scores_batch,
+    calculate_tnuos_score_from_tariff,
+    enrich_and_rescore_with_tnuos,
     filter_projects_by_persona_capacity,
+    find_tnuos_zone,
     get_color_from_score,
     get_rating_description,
 )
@@ -81,151 +89,12 @@ SUPABASE_KEY = os.getenv("SUPABASE_ANON_KEY")
 print(f"✅ SUPABASE_URL: {SUPABASE_URL}")
 print(f"✅ SUPABASE_KEY exists: {bool(SUPABASE_KEY)}")
 
-KM_PER_DEGREE_LAT = 111.32
+# KM_PER_DEGREE_LAT and TNUOS_ZONES_HARDCODED now imported from backend.scoring.algorithms
 INFRASTRUCTURE_CACHE_TTL_SECONDS = int(os.getenv("INFRA_CACHE_TTL", "600"))
 GRID_CELL_DEGREES = 0.5
 
-# ============================================================================
-# HARD-CODED TNUoS ZONES (No DB calls needed)
-# ============================================================================
-
-TNUOS_ZONES_HARDCODED = {
-    "GZ1": {
-        "name": "North Scotland",
-        "tariff": 15.32,
-        "bounds": {"min_lat": 57.5, "max_lat": 61.0, "min_lng": -6.0, "max_lng": -1.5},
-    },
-    "GZ2": {
-        "name": "South Scotland",
-        "tariff": 14.87,
-        "bounds": {"min_lat": 55.0, "max_lat": 57.5, "min_lng": -4.0, "max_lng": -1.5},
-    },
-    "GZ3": {
-        "name": "Borders",
-        "tariff": 13.45,
-        "bounds": {"min_lat": 54.5, "max_lat": 56.0, "min_lng": -4.0, "max_lng": -1.5},
-    },
-    "GZ4": {
-        "name": "Central Scotland",
-        "tariff": 12.98,
-        "bounds": {"min_lat": 55.5, "max_lat": 56.5, "min_lng": -5.0, "max_lng": -3.0},
-    },
-    "GZ5": {
-        "name": "Argyll",
-        "tariff": 11.67,
-        "bounds": {"min_lat": 55.0, "max_lat": 57.0, "min_lng": -6.0, "max_lng": -4.0},
-    },
-    "GZ6": {
-        "name": "Dumfries",
-        "tariff": 10.34,
-        "bounds": {"min_lat": 54.5, "max_lat": 55.5, "min_lng": -4.5, "max_lng": -2.5},
-    },
-    "GZ7": {
-        "name": "Ayr",
-        "tariff": 9.87,
-        "bounds": {"min_lat": 54.8, "max_lat": 55.5, "min_lng": -5.0, "max_lng": -3.5},
-    },
-    "GZ8": {
-        "name": "Central Belt",
-        "tariff": 8.92,
-        "bounds": {"min_lat": 55.2, "max_lat": 56.0, "min_lng": -4.5, "max_lng": -3.0},
-    },
-    "GZ9": {
-        "name": "Lothian",
-        "tariff": 7.56,
-        "bounds": {"min_lat": 55.5, "max_lat": 56.2, "min_lng": -3.5, "max_lng": -2.0},
-    },
-    "GZ10": {
-        "name": "Southern Scotland",
-        "tariff": 6.23,
-        "bounds": {"min_lat": 54.8, "max_lat": 55.5, "min_lng": -3.5, "max_lng": -1.5},
-    },
-    "GZ11": {
-        "name": "North East England",
-        "tariff": 5.67,
-        "bounds": {"min_lat": 54.0, "max_lat": 55.5, "min_lng": -3.0, "max_lng": -0.5},
-    },
-    "GZ12": {
-        "name": "Yorkshire",
-        "tariff": 4.89,
-        "bounds": {"min_lat": 53.0, "max_lat": 54.5, "min_lng": -3.0, "max_lng": -0.5},
-    },
-    "GZ13": {
-        "name": "Humber",
-        "tariff": 4.12,
-        "bounds": {"min_lat": 52.5, "max_lat": 53.5, "min_lng": -2.0, "max_lng": 0.5},
-    },
-    "GZ14": {
-        "name": "North West England",
-        "tariff": 3.78,
-        "bounds": {"min_lat": 52.5, "max_lat": 54.5, "min_lng": -3.5, "max_lng": -1.5},
-    },
-    "GZ15": {
-        "name": "East Midlands",
-        "tariff": 2.95,
-        "bounds": {"min_lat": 51.5, "max_lat": 53.0, "min_lng": -2.5, "max_lng": 0.0},
-    },
-    "GZ16": {
-        "name": "West Midlands",
-        "tariff": 2.34,
-        "bounds": {"min_lat": 51.5, "max_lat": 52.7, "min_lng": -3.0, "max_lng": -1.5},
-    },
-    "GZ17": {
-        "name": "East England",
-        "tariff": 1.87,
-        "bounds": {"min_lat": 51.5, "max_lat": 52.5, "min_lng": -0.5, "max_lng": 1.5},
-    },
-    "GZ18": {
-        "name": "South Wales",
-        "tariff": 1.45,
-        "bounds": {"min_lat": 51.2, "max_lat": 52.0, "min_lng": -3.5, "max_lng": -2.0},
-    },
-    "GZ19": {
-        "name": "North Wales",
-        "tariff": 0.98,
-        "bounds": {"min_lat": 52.3, "max_lat": 53.5, "min_lng": -3.8, "max_lng": -2.8},
-    },
-    "GZ20": {
-        "name": "Pembroke",
-        "tariff": 0.67,
-        "bounds": {"min_lat": 51.6, "max_lat": 52.1, "min_lng": -5.5, "max_lng": -4.8},
-    },
-    "GZ21": {
-        "name": "South West England",
-        "tariff": -0.12,
-        "bounds": {"min_lat": 50.5, "max_lat": 51.5, "min_lng": -4.5, "max_lng": -2.0},
-    },
-    "GZ22": {
-        "name": "Cornwall",
-        "tariff": -0.45,
-        "bounds": {"min_lat": 49.9, "max_lat": 50.7, "min_lng": -5.5, "max_lng": -4.5},
-    },
-    "GZ23": {
-        "name": "London",
-        "tariff": -0.78,
-        "bounds": {"min_lat": 51.2, "max_lat": 51.8, "min_lng": -0.5, "max_lng": 0.5},
-    },
-    "GZ24": {
-        "name": "South East England",
-        "tariff": -1.23,
-        "bounds": {"min_lat": 50.5, "max_lat": 51.5, "min_lng": -2.0, "max_lng": 1.5},
-    },
-    "GZ25": {
-        "name": "Kent",
-        "tariff": -1.56,
-        "bounds": {"min_lat": 50.8, "max_lat": 51.5, "min_lng": 0.2, "max_lng": 1.8},
-    },
-    "GZ26": {
-        "name": "Southern England",
-        "tariff": -1.89,
-        "bounds": {"min_lat": 50.5, "max_lat": 51.2, "min_lng": -2.5, "max_lng": 0.0},
-    },
-    "GZ27": {
-        "name": "Solent",
-        "tariff": -2.34,
-        "bounds": {"min_lat": 50.6, "max_lat": 51.0, "min_lng": -2.0, "max_lng": -1.0},
-    },
-}
+# NOTE: TNUOS_ZONES_HARDCODED now imported from backend.scoring.algorithms
+# The version in algorithms.py has 12 zones - if more zones are needed, update algorithms.py
 
 LCOE_CONFIG = {
     "baseline_pounds_per_mwh": 60.0,
@@ -235,149 +104,8 @@ LCOE_CONFIG = {
     "zone_specific_rates": {},
 }
 
-
-def find_tnuos_zone(latitude: float, longitude: float) -> Optional[Dict[str, Any]]:
-    """Find TNUoS zone for given coordinates using hard-coded bounding boxes."""
-
-    for zone_id, zone_data in TNUOS_ZONES_HARDCODED.items():
-        bounds = zone_data["bounds"]
-
-        if (
-            bounds["min_lat"] <= latitude <= bounds["max_lat"]
-            and bounds["min_lng"] <= longitude <= bounds["max_lng"]
-        ):
-            return {
-                "zone_id": zone_id,
-                "zone_name": zone_data["name"],
-                "generation_tariff_pounds_per_kw": zone_data["tariff"],
-            }
-
-    return None
-
-
-def calculate_tnuos_score_from_tariff(tariff: float) -> float:
-    """Convert TNUoS tariff (£/kW) to 0-100 investment score."""
-
-    min_tariff = -3.0
-    max_tariff = 16.0
-
-    if tariff <= min_tariff:
-        return 100.0
-    if tariff >= max_tariff:
-        return 0.0
-
-    normalized = (tariff - min_tariff) / (max_tariff - min_tariff)
-    return 100.0 * (1.0 - normalized)
-
-
-async def enrich_and_rescore_with_tnuos(
-    features: List[Dict[str, Any]],
-    persona: Optional[PersonaType] = None,
-) -> List[Dict[str, Any]]:
-    """Enrich projects with TNUoS data and adjust scores."""
-
-    if not features:
-        return features
-
-    features_sorted = sorted(
-        features,
-        key=lambda feature: feature.get("properties", {}).get("investment_rating", 0),
-        reverse=True,
-    )
-
-    print("📊 Enriching projects with TNUoS zones...")
-
-    enriched_count = 100
-
-    for feature in features_sorted:
-        properties = feature.setdefault("properties", {})
-
-        try:
-            coordinates = feature.get("geometry", {}).get("coordinates", [])
-            if len(coordinates) < 2:
-                properties["tnuos_enriched"] = False
-                continue
-
-            longitude, latitude = coordinates[0], coordinates[1]
-            zone = find_tnuos_zone(latitude, longitude)
-
-            if not zone:
-                properties["tnuos_enriched"] = False
-                continue
-
-            properties["tnuos_zone_id"] = zone["zone_id"]
-            properties["tnuos_zone_name"] = zone["zone_name"]
-            tariff_value = zone["generation_tariff_pounds_per_kw"]
-            properties["tnuos_tariff_pounds_per_kw"] = tariff_value
-
-            tnuos_score = calculate_tnuos_score_from_tariff(tariff_value)
-            properties["tnuos_score"] = round(tnuos_score, 1)
-
-            old_rating = float(properties.get("investment_rating", 0.0))
-            component_scores = dict(properties.get("component_scores") or {})
-            component_scores["tnuos_transmission_costs"] = tnuos_score
-
-            weights = dict(
-                PERSONA_WEIGHTS.get(persona or "hyperscaler", PERSONA_WEIGHTS["hyperscaler"])
-            )
-            if "tnuos_transmission_costs" not in weights:
-                fallback_weight = 0.1
-                existing_total = sum(weights.values()) or 1.0
-                weights = {
-                    key: (value / existing_total) * (1.0 - fallback_weight)
-                    for key, value in weights.items()
-                }
-                weights["tnuos_transmission_costs"] = fallback_weight
-
-            total_weight = sum(weights.values()) or 1.0
-            if not math.isclose(total_weight, 1.0, rel_tol=1e-6):
-                weights = {key: value / total_weight for key, value in weights.items()}
-
-            weighted_score = sum(
-                (component_scores.get(key, 0.0) or 0.0) * weight
-                for key, weight in weights.items()
-            )
-
-            weighted_score = max(0.0, min(100.0, weighted_score))
-            new_rating = round(weighted_score / 10.0, 1)
-
-            properties["component_scores"] = {
-                key: round(value, 1) for key, value in component_scores.items()
-            }
-
-            weighted_contributions = dict(properties.get("weighted_contributions") or {})
-            weighted_contributions = {
-                key: round((component_scores.get(key, 0.0) or 0.0) * weights.get(key, 0.0), 1)
-                for key in component_scores
-            }
-
-            properties["weighted_contributions"] = weighted_contributions
-            properties["investment_rating"] = new_rating
-            properties["internal_total_score"] = round(weighted_score, 1)
-            properties["tnuos_enriched"] = True
-            properties["rating_change"] = round(new_rating - old_rating, 1)
-
-            if abs(new_rating - old_rating) > 0.2:
-                site_name = properties.get("site_name", "Project")
-                print(
-                    f"  • {site_name}: {old_rating:.1f} → {new_rating:.1f} ({zone['zone_name']})"
-                )
-
-            enriched_count += 1
-        except Exception as exc:  # pragma: no cover - defensive guard
-            print(f"⚠️  Error processing project: {exc}")
-            properties["tnuos_enriched"] = False
-
-    print(f"✓ Enriched {enriched_count}/{len(features_sorted)} projects")
-
-    resorted_features = sorted(
-        features_sorted,
-        key=lambda feature: feature.get("properties", {}).get("investment_rating", 0),
-        reverse=True,
-    )
-
-    return resorted_features
-
+# NOTE: find_tnuos_zone, calculate_tnuos_score_from_tariff, and enrich_and_rescore_with_tnuos
+# are now imported from backend.scoring.algorithms
 
 class UserSite(BaseModel):
     site_name: str
@@ -834,282 +562,6 @@ INFRASTRUCTURE_SEARCH_RADIUS_KM = {
 }
 
 
-def _grid_steps_for_radius(grid: SpatialGrid, radius_km: float) -> int:
-    cell_width_km = max(1.0, grid.approximate_cell_width_km())
-    return max(1, int(math.ceil(radius_km / cell_width_km)) + 1)
-
-
-def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    radius = 6371.0
-    dlat = math.radians(lat2 - lat1)
-    dlon = math.radians(lon2 - lon1)
-    lat1_rad = math.radians(lat1)
-    lat2_rad = math.radians(lat2)
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2) ** 2
-    return 2 * radius * math.asin(math.sqrt(a))
-
-
-def exponential_score(distance_km: float, half_distance_km: float) -> float:
-    if distance_km >= 200:
-        return 0.0
-    k = 0.693147 / half_distance_km
-    score = 100 * (math.e ** (-k * distance_km))
-    return max(0.0, min(100.0, score))
-
-
-def point_to_line_segment_distance(
-    px: float,
-    py: float,
-    x1: float,
-    y1: float,
-    x2: float,
-    y2: float,
-) -> float:
-    a = px - x1
-    b = py - y1
-    c = x2 - x1
-    d = y2 - y1
-    dot = a * c + b * d
-    len_sq = c * c + d * d
-    if len_sq == 0:
-        return haversine(px, py, x1, y1)
-    param = dot / len_sq
-    if param < 0:
-        closest_x, closest_y = x1, y1
-    elif param > 1:
-        closest_x, closest_y = x2, y2
-    else:
-        closest_x = x1 + param * c
-        closest_y = y1 + param * d
-    return haversine(px, py, closest_x, closest_y)
-
-
-def _bbox_within_search(
-    bbox: Tuple[float, float, float, float],
-    lat: float,
-    lon: float,
-    radius_km: float,
-) -> bool:
-    min_lat, min_lon, max_lat, max_lon = bbox
-    lat_margin = radius_km / KM_PER_DEGREE_LAT
-    lon_margin = radius_km / (KM_PER_DEGREE_LAT * max(math.cos(math.radians(lat)), 0.2))
-    return not (
-        lat < min_lat - lat_margin
-        or lat > max_lat + lat_margin
-        or lon < min_lon - lon_margin
-        or lon > max_lon + lon_margin
-    )
-
-
-def _nearest_point(
-    grid: SpatialGrid,
-    features: Sequence[PointFeature],
-    lat: float,
-    lon: float,
-    radius_km: float,
-) -> Optional[Tuple[float, PointFeature]]:
-    best: Optional[Tuple[float, PointFeature]] = None
-    steps = _grid_steps_for_radius(grid, radius_km)
-    for step in range(1, steps + 2):
-        for feature in grid.query(lat, lon, step):
-            if not isinstance(feature, PointFeature):
-                continue
-            distance = haversine(lat, lon, feature.lat, feature.lon)
-            if distance > radius_km:
-                continue
-            if not best or distance < best[0]:
-                best = (distance, feature)
-        if best:
-            break
-
-    if not best and features:
-        for feature in features:
-            distance = haversine(lat, lon, feature.lat, feature.lon)
-            if not best or distance < best[0]:
-                best = (distance, feature)
-    return best
-
-
-def _nearest_line(
-    grid: SpatialGrid,
-    features: Sequence[LineFeature],
-    lat: float,
-    lon: float,
-    radius_km: float,
-) -> Optional[Tuple[float, LineFeature]]:
-    best: Optional[Tuple[float, LineFeature]] = None
-    steps = _grid_steps_for_radius(grid, radius_km)
-    for step in range(1, steps + 2):
-        for feature in grid.query(lat, lon, step):
-            if not isinstance(feature, LineFeature):
-                continue
-            if not _bbox_within_search(feature.bbox, lat, lon, radius_km):
-                continue
-            distance = _distance_to_line_feature(feature, lat, lon)
-            if distance > radius_km:
-                continue
-            if not best or distance < best[0]:
-                best = (distance, feature)
-        if best:
-            break
-
-    if not best and features:
-        for feature in features:
-            if not _bbox_within_search(feature.bbox, lat, lon, radius_km):
-                continue
-            distance = _distance_to_line_feature(feature, lat, lon)
-            if not best or distance < best[0]:
-                best = (distance, feature)
-    return best
-
-
-def _distance_to_line_feature(feature: LineFeature, lat: float, lon: float) -> float:
-    best = float("inf")
-    for segment in feature.segments:
-        distance = point_to_line_segment_distance(lat, lon, *segment)
-        if distance < best:
-            best = distance
-            if best == 0:
-                break
-    return best if best != float("inf") else 9999.0
-
-def calculate_enhanced_investment_rating(
-    project: Dict[str, Any],
-    proximity_scores: Dict[str, float],
-    persona: Optional[PersonaType] = None,
-) -> Dict[str, Any]:
-    if persona is not None:
-        return calculate_persona_weighted_score(project, proximity_scores, persona)
-
-    base_score = calculate_base_investment_score_renewable(project)
-    infrastructure_bonus = calculate_infrastructure_bonus_renewable(proximity_scores)
-    total_internal_score = min(100.0, base_score + infrastructure_bonus)
-    display_rating = total_internal_score / 10.0
-    color = get_color_from_score(total_internal_score)
-    description = get_rating_description(total_internal_score)
-
-    return {
-        "base_investment_score": round(base_score / 10.0, 1),
-        "infrastructure_bonus": round(infrastructure_bonus / 10.0, 1),
-        "investment_rating": round(display_rating, 1),
-        "rating_description": description,
-        "color_code": color,
-        "nearest_infrastructure": proximity_scores.get("nearest_distances", {}),
-        "internal_total_score": round(total_internal_score, 1),
-        "scoring_methodology": "Traditional renewable energy scoring (10-100 internal, 1.0-10.0 display)",
-    }
-
-
-async def calculate_proximity_scores_batch(projects: List[Dict[str, Any]]) -> List[Dict[str, float]]:
-    if not projects:
-        return []
-
-    catalog = await INFRASTRUCTURE_CACHE.get_catalog()
-    results: List[Dict[str, float]] = []
-
-    for project in projects:
-        project_lat = _coerce_float(project.get("latitude"))
-        project_lon = _coerce_float(project.get("longitude"))
-        if project_lat is None or project_lon is None:
-            continue
-
-        proximity_scores: Dict[str, float] = {
-            "substation_score": 0.0,
-            "transmission_score": 0.0,
-            "fiber_score": 0.0,
-            "ixp_score": 0.0,
-            "water_score": 0.0,
-            "total_proximity_bonus": 0.0,
-            "nearest_distances": {},
-        }
-
-        nearest_distances: Dict[str, float] = {}
-
-        substation = _nearest_point(
-            catalog.substations_index,
-            catalog.substations,
-            project_lat,
-            project_lon,
-            INFRASTRUCTURE_SEARCH_RADIUS_KM["substation"],
-        )
-        if substation:
-            distance, _ = substation
-            proximity_scores["substation_score"] = exponential_score(distance, 30.0)
-            nearest_distances["substation_km"] = round(distance, 1)
-
-        transmission = _nearest_line(
-            catalog.transmission_index,
-            catalog.transmission_lines,
-            project_lat,
-            project_lon,
-            INFRASTRUCTURE_SEARCH_RADIUS_KM["transmission"],
-        )
-        if transmission:
-            distance, _ = transmission
-            proximity_scores["transmission_score"] = exponential_score(distance, 30.0)
-            nearest_distances["transmission_km"] = round(distance, 1)
-
-        fiber = _nearest_line(
-            catalog.fiber_index,
-            catalog.fiber_cables,
-            project_lat,
-            project_lon,
-            INFRASTRUCTURE_SEARCH_RADIUS_KM["fiber"],
-        )
-        if fiber:
-            distance, _ = fiber
-            proximity_scores["fiber_score"] = exponential_score(distance, 15.0)
-            nearest_distances["fiber_km"] = round(distance, 1)
-
-        ixp = _nearest_point(
-            catalog.ixp_index,
-            catalog.internet_exchange_points,
-            project_lat,
-            project_lon,
-            INFRASTRUCTURE_SEARCH_RADIUS_KM["ixp"],
-        )
-        if ixp:
-            distance, _ = ixp
-            proximity_scores["ixp_score"] = exponential_score(distance, 40.0)
-            nearest_distances["ixp_km"] = round(distance, 1)
-
-        water_point = _nearest_point(
-            catalog.water_point_index,
-            catalog.water_points,
-            project_lat,
-            project_lon,
-            INFRASTRUCTURE_SEARCH_RADIUS_KM["water"],
-        )
-        water_line = _nearest_line(
-            catalog.water_line_index,
-            catalog.water_lines,
-            project_lat,
-            project_lon,
-            INFRASTRUCTURE_SEARCH_RADIUS_KM["water"],
-        )
-        water_candidates: List[Tuple[float, str]] = []
-        if water_point:
-            water_candidates.append((water_point[0], "water_point"))
-        if water_line:
-            water_candidates.append((water_line[0], "water_line"))
-        if water_candidates:
-            distance, _ = min(water_candidates, key=lambda item: item[0])
-            proximity_scores["water_score"] = exponential_score(distance, 25.0)
-            nearest_distances["water_km"] = round(distance, 1)
-
-        proximity_scores["nearest_distances"] = nearest_distances
-        proximity_scores["total_proximity_bonus"] = (
-            proximity_scores["substation_score"]
-            + proximity_scores["transmission_score"]
-            + proximity_scores["fiber_score"]
-            + proximity_scores["ixp_score"]
-            + proximity_scores["water_score"]
-        )
-
-        results.append(proximity_scores)
-
-    return results
-
 def calculate_rating_distribution(features: List[Dict[str, Any]]) -> Dict[str, int]:
     distribution = {
         "excellent": 0,
@@ -1193,7 +645,8 @@ async def get_projects(
         if persona:
             rating_result = calculate_persona_weighted_score(project, dummy_proximity, persona)
         else:
-            rating_result = calculate_enhanced_investment_rating(project, dummy_proximity)
+            # Use default persona when not specified
+            rating_result = calculate_persona_weighted_score(project, dummy_proximity, "hyperscaler")
         project.update(
             {
                 "investment_rating": rating_result["investment_rating"],
@@ -1230,7 +683,8 @@ async def get_geojson(
         if persona:
             rating_result = calculate_persona_weighted_score(project, dummy_proximity, persona)
         else:
-            rating_result = calculate_enhanced_investment_rating(project, dummy_proximity)
+            # Use default persona when not specified
+            rating_result = calculate_persona_weighted_score(project, dummy_proximity, "hyperscaler")
 
         features.append(
             {
@@ -1298,7 +752,8 @@ async def score_user_sites(
             }
         )
 
-    proximity_scores = await calculate_proximity_scores_batch(sites_for_calc)
+    catalog = await INFRASTRUCTURE_CACHE.get_catalog()
+    proximity_scores = await calculate_proximity_scores_batch(sites_for_calc, catalog)
 
     scored_sites: List[Dict[str, Any]] = []
     for index, site_data in enumerate(sites_for_calc):
@@ -1318,7 +773,8 @@ async def score_user_sites(
         if persona:
             rating_result = calculate_persona_weighted_score(site_data, prox_scores, persona, "demand", None, None)
         else:
-            rating_result = calculate_enhanced_investment_rating(site_data, prox_scores)
+            # Use default persona when not specified
+            rating_result = calculate_persona_weighted_score(site_data, prox_scores, "hyperscaler", "demand", None, None)
 
         scored_sites.append(
             {
@@ -1449,7 +905,7 @@ async def get_enhanced_geojson(
         print(f"✅ Loaded {len(projects)} projects from {source_table}")
         if persona and apply_capacity_filter:
             original_count = len(projects)
-            projects = filter_projects_by_persona_capacity(projects, persona)
+            projects = filter_projects_by_persona_capacity(projects, persona, PERSONA_CAPACITY_RANGES)
             print(f"🎯 Filtered to {len(projects)} projects for {persona} (was {original_count})")
         if persona:
             dc_thresholds = {"hyperscaler": 30.0, "colocation": 5.0, "edge_computing": 1.0}
@@ -1477,7 +933,8 @@ async def get_enhanced_geojson(
     try:
         print("🔄 Starting batch proximity calculation...")
         batch_start = time.time()
-        all_proximity_scores = await calculate_proximity_scores_batch(valid_projects)
+        catalog = await INFRASTRUCTURE_CACHE.get_catalog()
+        all_proximity_scores = await calculate_proximity_scores_batch(valid_projects, catalog)
         batch_time = time.time() - batch_start
         print(f"✅ Batch proximity calculation completed in {batch_time:.2f}s")
     except Exception as exc:  # pragma: no cover - fallback path
@@ -1584,7 +1041,10 @@ async def get_enhanced_geojson(
                             project, proximity_scores, persona, "demand", user_max_price_mwh, user_ideal_mw
                         )
                     else:
-                        rating_result = calculate_enhanced_investment_rating(project, proximity_scores)
+                        # Use default persona when not specified
+                        rating_result = calculate_persona_weighted_score(
+                            project, proximity_scores, "hyperscaler", "demand", user_max_price_mwh, user_ideal_mw
+                        )
                 else:
                     # Use TOPSIS results
                     closeness = topsis_info.get("closeness_coefficient", 0.0)
@@ -1636,7 +1096,15 @@ async def get_enhanced_geojson(
                         user_ideal_mw,
                     )
                 else:
-                    rating_result = calculate_enhanced_investment_rating(project, proximity_scores)
+                    # Use default persona when not specified
+                    rating_result = calculate_persona_weighted_score(
+                        project,
+                        proximity_scores,
+                        "hyperscaler",
+                        "demand",
+                        user_max_price_mwh,
+                        user_ideal_mw,
+                    )
 
             # Build feature properties
             properties: Dict[str, Any] = {
@@ -1702,7 +1170,7 @@ async def get_enhanced_geojson(
             )
 
     try:
-        features = await enrich_and_rescore_top_25_with_tnuos(features, persona)
+        features = await enrich_and_rescore_with_tnuos(features, persona, PERSONA_WEIGHTS)
     except Exception as exc:  # pragma: no cover - defensive guard
         print(f"⚠️ TNUoS enrichment skipped: {exc}")
 
@@ -2068,7 +1536,8 @@ async def compare_scoring_systems(
             "water_score": 0.0,
             "nearest_distances": {},
         }
-        renewable_rating = calculate_enhanced_investment_rating(project, dummy_proximity)
+        # Compare baseline hyperscaler persona with target persona
+        renewable_rating = calculate_persona_weighted_score(project, dummy_proximity, "hyperscaler")
         persona_rating = calculate_persona_weighted_score(project, dummy_proximity, persona)
         comparison.append(
             {
@@ -2138,7 +1607,7 @@ async def get_customer_match_projects(
     limit: int = Query(5000, description="Number of projects to analyze"),
 ) -> Dict[str, Any]:
     projects = await query_supabase("renewable_projects?select=*", limit=limit)
-    filtered_projects = filter_projects_by_persona_capacity(projects, target_customer)
+    filtered_projects = filter_projects_by_persona_capacity(projects, target_customer, PERSONA_CAPACITY_RANGES)
 
     customer_analysis: List[Dict[str, Any]] = []
     for project in filtered_projects:
