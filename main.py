@@ -41,6 +41,20 @@ except ImportError as exc:  # pragma: no cover - handled dynamically at runtime
     print(f"Error initializing renewable financial model components: {exc}")
     FINANCIAL_MODEL_AVAILABLE = False
 
+try:
+    print("Loading power developer workflow components...")
+    from backend.power_workflow import (
+        analyze_for_power_developer as power_workflow_analyze,
+        POWER_DEVELOPER_PERSONAS,
+        POWER_DEVELOPER_CAPACITY_RANGES,
+    )
+
+    POWER_WORKFLOW_AVAILABLE = True
+    print("[\u2713] Power developer workflow components loaded successfully")
+except ImportError as exc:  # pragma: no cover - handled dynamically at runtime
+    print(f"Error initializing power developer workflow components: {exc}")
+    POWER_WORKFLOW_AVAILABLE = False
+
 print("Initializing FastAPI renderer...")
 _api_start_time = time.time()
 app = FastAPI(title="Infranodal API", version="2.1.0")
@@ -188,78 +202,8 @@ PERSONA_CAPACITY_RANGES = {
     "hyperscaler": {"min": 30, "max": 250},
 }
 
-# ============================================================================
-# POWER DEVELOPER PROJECT TYPE PERSONAS
-# ============================================================================
-# Maps greenfield/repower/stranded to component score weights
-# Same 7 business criteria as hyperscaler personas
-# Weights sum to 1.0
-
-POWER_DEVELOPER_PERSONAS: Dict[str, Dict[str, float]] = {
-    "greenfield": {
-        "capacity": 0.15,
-        "connection_speed": 0.15,
-        "resilience": 0.10,
-        "land_planning": 0.25,
-        "latency": 0.03,
-        "cooling": 0.02,
-        "price_sensitivity": 0.20,
-    },
-    "repower": {
-        "capacity": 0.15,
-        "connection_speed": 0.20,
-        "resilience": 0.12,
-        "land_planning": 0.15,
-        "latency": 0.05,
-        "cooling": 0.03,
-        "price_sensitivity": 0.15,
-    },
-    "stranded": {
-        "capacity": 0.05,
-        "connection_speed": 0.25,
-        "resilience": 0.10,
-        "land_planning": 0.05,
-        "latency": 0.05,
-        "cooling": 0.05,
-        "price_sensitivity": 0.25,
-    },
-}
-
-POWER_DEVELOPER_CAPACITY_RANGES = {
-    "greenfield": {"min": 1, "max": 1000},
-    "repower": {"min": 1, "max": 1000},
-    "stranded": {"min": 1, "max": 1000},
-}
-
-
-def resolve_power_developer_persona(
-    raw_value: Optional[str],
-) -> Tuple[PowerDeveloperPersona, str, str]:
-    """Normalize the requested persona and flag how it was resolved.
-
-    Returns a tuple of:
-        (effective_persona, requested_value, resolution_status)
-
-    Where ``resolution_status`` is one of ``"defaulted"`` (no value supplied),
-    ``"invalid"`` (value supplied but not recognized), or ``"valid"``.
-    """
-
-    requested_value = (raw_value or "").strip()
-    normalized_value = requested_value.lower()
-
-    if not normalized_value:
-        return "greenfield", requested_value, "defaulted"
-
-    if normalized_value not in POWER_DEVELOPER_PERSONAS:
-        return "greenfield", requested_value, "invalid"
-
-    return cast(PowerDeveloperPersona, normalized_value), requested_value, "valid"
-
-# Validate weights sum to 1.0
-for persona_name, weights_dict in POWER_DEVELOPER_PERSONAS.items():
-    total_weight = sum(weights_dict.values())
-    if not math.isclose(total_weight, 1.0, rel_tol=1e-6):
-        print(f"⚠️ WARNING: {persona_name} weights sum to {total_weight}, not 1.0")
+# Note: Power developer personas (greenfield/repower/stranded) are now defined
+# in backend/power_workflow.py to keep the workflow logic modular
 
 PERSONA_CAPACITY_PARAMS = {
     "edge_computing": {"min_mw": 0.3, "ideal_mw": 2.0, "max_mw": 5.0,"tolerance_factor": 0.7},
@@ -3316,358 +3260,74 @@ async def compare_scoring_systems(
     }
 
 
+
+
 # ============================================================================
-# TEC CONNECTIONS TRANSFORMATION
+# POWER DEVELOPER WORKFLOW ENDPOINT
 # ============================================================================
-
-def _extract_coordinates(row: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
-    """Return latitude/longitude from heterogeneous Supabase payloads."""
-
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-
-    latitude_keys = [
-        "latitude",
-        "lat",
-        "Latitude",
-        "Latitude_deg",
-    ]
-    longitude_keys = [
-        "longitude",
-        "lon",
-        "lng",
-        "Longitude",
-        "Longitude_deg",
-    ]
-
-    for key in latitude_keys:
-        if key in row:
-            latitude = _coerce_float(row.get(key))
-            if latitude is not None:
-                break
-
-    for key in longitude_keys:
-        if key in row:
-            longitude = _coerce_float(row.get(key))
-            if longitude is not None:
-                break
-
-    if (latitude is None or longitude is None) and isinstance(row.get("location"), dict):
-        location_data = row.get("location")
-        latitude = latitude or _coerce_float(
-            location_data.get("lat") or location_data.get("latitude")
-        )
-        longitude = longitude or _coerce_float(
-            location_data.get("lon")
-            or location_data.get("lng")
-            or location_data.get("longitude")
-        )
-
-    if (latitude is None or longitude is None) and isinstance(row.get("coordinates"), (list, tuple)):
-        coords = row.get("coordinates")
-        if len(coords) >= 2:
-            longitude = longitude or _coerce_float(coords[0])
-            latitude = latitude or _coerce_float(coords[1])
-
-    return latitude, longitude
-
-
-def transform_tec_to_project_schema(tec_row: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Transform a TEC connections database row to unified project schema.
-
-    TEC table has different field names than renewable_projects, so we map them:
-    - project_name → site_name
-    - development_status → development_status_short
-    - Coordinates might be NULL (we'll handle that separately)
-    """
-
-    latitude, longitude = _extract_coordinates(tec_row)
-
-    return {
-        "id": tec_row.get("id"),
-        "ref_id": str(tec_row.get("id", "")),
-        "site_name": tec_row.get("project_name") or "Untitled Project",
-        "project_name": tec_row.get("project_name"),
-        "capacity_mw": _coerce_float(tec_row.get("capacity_mw")) or 0.0,
-        "technology_type": tec_row.get("technology_type") or "Unknown",
-        "development_status_short": tec_row.get("development_status") or "Scoping",
-        "development_status": tec_row.get("development_status"),
-        "constraint_status": tec_row.get("constraint_status"),
-        "connection_site": tec_row.get("connection_site"),
-        "substation_name": tec_row.get("substation_name"),
-        "voltage_kv": _coerce_float(tec_row.get("voltage")),
-        "latitude": latitude,
-        "longitude": longitude,
-        "county": None,
-        "country": "UK",
-        "operator": tec_row.get("operator") or tec_row.get("customer_name"),
-        "_source_table": "tec_connections",
-    }
-
+# This endpoint is a wrapper around the power developer workflow module
+# Located in backend/power_workflow.py
 
 @app.post("/api/projects/power-developer-analysis")
-async def analyze_for_power_developer(
-    criteria: Dict[str, Any] = Body(default_factory=dict),
-    site_location: Optional[Dict[str, float]] = None,
-    target_persona: Optional[str] = Query(
-        None, description="greenfield, repower, or stranded"
-    ),
-    limit: int = Query(5000),
-    source_table: str = Query(
-        "tec_connections", description="Source table: tec_connections or renewable_projects"
-    ),
+async def analyze_for_power_developer_endpoint(
+    custom_weights: Optional[Dict[str, float]] = Body(None, description="Frontend weights (0-100 scale)"),
+    source_table: str = Body("tec_connections", description="Source table: tec_connections or renewable_projects"),
+    target_persona: Optional[str] = Body(None, description="Project type: greenfield, repower, or stranded"),
+    user_ideal_mw: Optional[float] = Body(None, description="Target capacity in MW"),
+    user_max_price_mwh: Optional[float] = Body(None, description="Maximum acceptable power price (£/MWh)"),
+    apply_capacity_filter: bool = Body(True, description="Apply persona capacity filtering"),
+    limit: int = Body(5000, description="Maximum projects to process"),
 ) -> Dict[str, Any]:
     """
-    Power developer workflow - analyzes TEC grid connections for development opportunity.
+    Power developer workflow endpoint - analyzes TEC grid connections for development opportunities.
 
-    Mirrors hyperscaler workflow exactly:
-    1. Fetch projects (from tec_connections)
-    2. Transform to schema (TEC rows → project objects)
-    3. Calculate proximity scores (infrastructure analysis)
-    4. Build component scores (7 business criteria)
-    5. Apply project type weights (greenfield/repower/stranded)
-    6. Return scored GeoJSON
+    This is a wrapper around the power_workflow module which implements:
+    - Phase 1: Parameter alignment (user_ideal_mw, user_max_price_mwh, custom_weights)
+    - Phase 2: Capacity filtering (persona-specific ranges + 90% gating)
+    - Mirrors data center workflow with identical logic, different source table
+
+    The workflow:
+    1. Fetch projects from tec_connections table
+    2. Transform TEC schema to unified project schema
+    3. Apply capacity filtering based on persona
+    4. Calculate infrastructure proximity scores
+    5. Score projects using 7 business criteria
+    6. Apply persona-specific weights
+    7. Return scored GeoJSON
 
     Args:
-        criteria: Not used (legacy parameter, kept for compatibility)
-        site_location: Not used (legacy parameter)
-        target_persona: Project type - "greenfield", "repower", or "stranded"
-        limit: Max projects to return (default 150)
-        source_table: Data source - "tec_connections" (new) or "renewable_projects" (fallback)
+        custom_weights: Frontend weights dict with 7 criteria (0-100 scale)
+        source_table: Data source (tec_connections or renewable_projects)
+        target_persona: Project type (greenfield/repower/stranded)
+        user_ideal_mw: User's target capacity in MW (affects scoring and filtering)
+        user_max_price_mwh: User's max acceptable power price (£/MWh)
+        apply_capacity_filter: Whether to apply persona capacity filtering
+        limit: Max projects to return
 
     Returns:
-        GeoJSON FeatureCollection with scored projects
+        GeoJSON FeatureCollection with scored projects and metadata
     """
 
-    start_time = time.time()
+    if not POWER_WORKFLOW_AVAILABLE:
+        raise HTTPException(
+            500,
+            "Power developer workflow module is not available. "
+            "Check backend/power_workflow.py initialization."
+        )
 
-    # ========================================================================
-    # STEP 0: Validate Input
-    # ========================================================================
-    target_persona, requested_persona, persona_resolution = resolve_power_developer_persona(
-        target_persona
+    # Call the power workflow function with all necessary dependencies
+    return await power_workflow_analyze(
+        query_supabase=query_supabase,
+        calculate_proximity_scores_batch=calculate_proximity_scores_batch,
+        build_persona_component_scores=build_persona_component_scores,
+        custom_weights=custom_weights,
+        source_table=source_table,
+        target_persona=target_persona,
+        user_ideal_mw=user_ideal_mw,
+        user_max_price_mwh=user_max_price_mwh,
+        apply_capacity_filter=apply_capacity_filter,
+        limit=limit,
     )
-
-    if persona_resolution == "defaulted":
-        print("🔄 Power Developer Analysis - Project Type requested: <default>")
-        print("   ℹ️ No project type supplied, defaulting to 'greenfield'")
-    elif persona_resolution == "invalid":
-        print(
-            "🔄 Power Developer Analysis - Project Type requested: "
-            f"{requested_persona}"
-        )
-        print(
-            f"   ⚠️ Invalid project type '{requested_persona}', using 'greenfield'"
-        )
-    else:
-        print(
-            "🔄 Power Developer Analysis - Project Type requested: "
-            f"{requested_persona}"
-        )
-        print(f"   🎯 Using project type '{target_persona}'")
-
-    weights = POWER_DEVELOPER_PERSONAS[target_persona]
-
-    # ========================================================================
-    # STEP 1: Fetch Projects from Database
-    # ========================================================================
-    print(f"   📊 Fetching {limit} projects from '{source_table}'...")
-
-    try:
-        raw_rows = await query_supabase(f"{source_table}?select=*", limit=limit)
-        if not raw_rows:
-            print("   ⚠️ No projects returned from database")
-            return {
-                "type": "FeatureCollection",
-                "features": [],
-                "metadata": {
-                    "error": "No projects found",
-                    "project_type": target_persona,
-                    "project_type_resolution": persona_resolution,
-                    "requested_project_type": requested_persona or None,
-                },
-            }
-        print(f"   ✅ Loaded {len(raw_rows)} projects")
-    except Exception as exc:
-        print(f"   ❌ Database error: {exc}")
-        raise HTTPException(500, f"Failed to fetch projects: {str(exc)}")
-
-    # ========================================================================
-    # STEP 2: Transform Rows to Project Schema
-    # ========================================================================
-    print("   🔄 Transforming to project schema...")
-
-    if source_table == "tec_connections":
-        projects = [transform_tec_to_project_schema(row) for row in raw_rows]
-    else:
-        projects = raw_rows
-
-    # ========================================================================
-    # STEP 3: Filter for Valid Coordinates
-    # ========================================================================
-    valid_projects = [
-        p for p in projects if p.get("latitude") is not None and p.get("longitude") is not None
-    ]
-
-    print(f"   📍 Valid coordinates: {len(valid_projects)}/{len(projects)}")
-
-    if not valid_projects:
-        print("   ⚠️ No projects with valid coordinates")
-        return {
-            "type": "FeatureCollection",
-            "features": [],
-            "metadata": {
-                "warning": "No valid coordinates",
-                "project_type": target_persona,
-                "project_type_resolution": persona_resolution,
-                "requested_project_type": requested_persona or None,
-            },
-        }
-
-    # ========================================================================
-    # STEP 4: Calculate Infrastructure Proximity Scores
-    # ========================================================================
-    print("   🔄 Calculating proximity scores...")
-
-    try:
-        all_proximity_scores = await calculate_proximity_scores_batch(valid_projects)
-        print(f"   ✅ Proximity calculations complete")
-    except Exception as exc:
-        print(f"   ❌ Proximity calculation error: {exc}")
-        raise
-
-    # ========================================================================
-    # STEP 5: Score Each Project Using Power Developer Weights
-    # ========================================================================
-    print(f"   🔄 Scoring {len(valid_projects)} projects as '{target_persona}'...")
-
-    features: List[Dict[str, Any]] = []
-
-    for index, project in enumerate(valid_projects):
-        try:
-            proximity_scores = (
-                all_proximity_scores[index]
-                if index < len(all_proximity_scores)
-                else {
-                    "substation_score": 0.0,
-                    "transmission_score": 0.0,
-                    "fiber_score": 0.0,
-                    "ixp_score": 0.0,
-                    "water_score": 0.0,
-                    "nearest_distances": {},
-                }
-            )
-
-            # STEP 5A: Build component scores (7 business criteria)
-            component_scores = build_persona_component_scores(
-                project,
-                proximity_scores,
-                persona=target_persona,
-                perspective="demand",
-            )
-
-            # STEP 5B: Apply power developer weights
-            weighted_score = sum(
-                component_scores.get(criterion, 0) * weights.get(criterion, 0)
-                for criterion in component_scores
-            )
-
-            weighted_score = max(0.0, min(100.0, weighted_score))
-
-            # STEP 5C: Convert to display format (0-10 scale)
-            display_rating = round(weighted_score / 10.0, 1)
-            color_code = get_color_from_score(weighted_score)
-            rating_description = get_rating_description(weighted_score)
-
-            # STEP 5D: Build properties object
-            properties = {
-                "id": project.get("ref_id"),
-                "project_name": project.get("site_name"),
-                "site_name": project.get("site_name"),
-                "capacity_mw": project.get("capacity_mw"),
-                "technology_type": project.get("technology_type"),
-                "operator": project.get("operator"),
-                "development_status": project.get("development_status_short"),
-                "connection_site": project.get("connection_site"),
-                "substation_name": project.get("substation_name"),
-                "voltage_kv": project.get("voltage_kv"),
-                "investment_rating": display_rating,
-                "rating_description": rating_description,
-                "color_code": color_code,
-                "component_scores": {k: round(v, 1) for k, v in component_scores.items()},
-                "weighted_contributions": {
-                    k: round(component_scores[k] * weights.get(k, 0), 1) for k in component_scores
-                },
-                "project_type": target_persona,
-                "project_type_weights": weights,
-                "internal_total_score": round(weighted_score, 1),
-                "nearest_infrastructure": proximity_scores.get("nearest_distances", {}),
-            }
-
-            # STEP 5E: Build GeoJSON feature
-            feature = {
-                "type": "Feature",
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [project["longitude"], project["latitude"]],
-                },
-                "properties": properties,
-            }
-
-            features.append(feature)
-
-        except Exception as exc:
-            print(f"   ⚠️ Error scoring project {index + 1}: {exc}")
-            continue
-
-    # ========================================================================
-    # STEP 6: Sort by Investment Rating
-    # ========================================================================
-    features_sorted = sorted(
-        features,
-        key=lambda f: f.get("properties", {}).get("investment_rating", 0),
-        reverse=True,
-    )
-
-    # ========================================================================
-    # STEP 7: Log Results and Return
-    # ========================================================================
-    processing_time = time.time() - start_time
-
-    print(f"   ✅ Scoring complete: {len(features_sorted)} projects in {processing_time:.2f}s")
-
-    if features_sorted:
-        top = features_sorted[0]["properties"]
-        print(
-            f"   🏆 Top project: {top.get('project_name')} - "
-            f"Rating {top.get('investment_rating')}/10 • {top.get('capacity_mw')}MW"
-        )
-
-    return {
-        "type": "FeatureCollection",
-        "features": features_sorted,
-        "metadata": {
-            "scoring_system": "Power Developer - Project Type Analysis",
-            "project_type": target_persona,
-            "project_type_weights": weights,
-            "requested_project_type": requested_persona or None,
-            "project_type_resolution": persona_resolution,
-            "source_table": source_table,
-            "total_projects_processed": len(raw_rows),
-            "projects_with_valid_coords": len(valid_projects),
-            "projects_scored": len(features_sorted),
-            "processing_time_seconds": round(processing_time, 2),
-            "algorithm_version": "2.2 - Power Developer Workflow",
-            "rating_scale": {
-                "9.0-10.0": "Excellent",
-                "8.0-8.9": "Very Good",
-                "7.0-7.9": "Good",
-                "6.0-6.9": "Above Average",
-                "5.0-5.9": "Average",
-            },
-        },
-    }
 
 
 @app.get("/api/projects/customer-match")
