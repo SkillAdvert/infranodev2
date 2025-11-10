@@ -1,23 +1,16 @@
 """
-Power Developer Workflow
-========================
+Power Developer Workflow (Enhanced Architecture)
+=================================================
 
 Analyzes TEC (Transmission Entry Capacity) grid connections for power development opportunities.
 
-This module mirrors the data center developer workflow but operates on the `tec_connections` table
-instead of `renewable_projects`. It helps power developers (greenfield/repower/stranded) find
-optimal demand sites for their projects.
-
-Workflow:
-1. Fetch projects from tec_connections table
-2. Transform TEC schema to unified project schema
-3. Apply capacity filtering based on persona
-4. Calculate infrastructure proximity scores
-5. Score projects using 7 business criteria
-6. Apply persona-specific weights
-7. Return scored GeoJSON
+This module implements:
+- Phase 1: Parameter alignment (user_ideal_mw, user_max_price_mwh, custom_weights)
+- Phase 2: Capacity filtering (persona-specific ranges + 90% gating)
+- Clean architecture with dependency injection and type safety
 
 Author: AI Assistant
+Version: 2.3 - Enhanced Architecture
 Date: 2025-11-10
 """
 
@@ -25,9 +18,27 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Sequence, Tuple, cast
 
-from fastapi import Body, HTTPException, Query
+# Optional dependencies with fallback shims for testing
+try:
+    from fastapi import HTTPException
+except ModuleNotFoundError:
+    class HTTPException(Exception):
+        """Minimal HTTPException shim when FastAPI is unavailable."""
+        def __init__(self, status_code: int, detail: str | None = None):
+            super().__init__(detail)
+            self.status_code = status_code
+            self.detail = detail
+
+try:
+    from pydantic import BaseModel
+except ModuleNotFoundError:
+    class BaseModel:  # type: ignore
+        """Minimal BaseModel shim when Pydantic is unavailable."""
+        def __init__(self, **data: Any):
+            for key, value in data.items():
+                setattr(self, key, value)
 
 
 # ============================================================================
@@ -35,6 +46,32 @@ from fastapi import Body, HTTPException, Query
 # ============================================================================
 
 PowerDeveloperPersona = Literal["greenfield", "repower", "stranded"]
+
+# Type aliases for dependency injection
+QuerySupabaseFn = Callable[..., Awaitable[Sequence[Dict[str, Any]]]]
+TransformProjectFn = Callable[[Dict[str, Any]], Dict[str, Any]]
+CalculateProximityFn = Callable[[Sequence[Dict[str, Any]]], Awaitable[Sequence[Dict[str, Any]]]]
+BuildComponentScoresFn = Callable[..., Dict[str, float]]
+GetScoreColorFn = Callable[[float], str]
+GetScoreDescriptionFn = Callable[[float], str]
+
+
+# ============================================================================
+# RESPONSE MODELS
+# ============================================================================
+
+class PowerDeveloperFeature(BaseModel):
+    """GeoJSON feature for a scored power developer project."""
+    type: Literal["Feature"]
+    geometry: Dict[str, Any]
+    properties: Dict[str, Any]
+
+
+class PowerDeveloperAnalysisResponse(BaseModel):
+    """GeoJSON FeatureCollection of scored projects with metadata."""
+    type: Literal["FeatureCollection"]
+    features: List[PowerDeveloperFeature]
+    metadata: Dict[str, Any]
 
 
 # ============================================================================
@@ -90,10 +127,8 @@ def resolve_power_developer_persona(
     Returns a tuple of:
         (effective_persona, requested_value, resolution_status)
 
-    Where ``resolution_status`` is one of ``"defaulted"`` (no value supplied),
-    ``"invalid"`` (value supplied but not recognized), or ``"valid"``.
+    Where resolution_status is one of "defaulted", "invalid", or "valid".
     """
-
     requested_value = (raw_value or "").strip()
     normalized_value = requested_value.lower()
 
@@ -104,106 +139,6 @@ def resolve_power_developer_persona(
         return "greenfield", requested_value, "invalid"
 
     return cast(PowerDeveloperPersona, normalized_value), requested_value, "valid"
-
-
-def _coerce_float(value: Any) -> Optional[float]:
-    """Safely coerce a value to float, returning None if not possible."""
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except (ValueError, TypeError):
-            return None
-    return None
-
-
-def _extract_coordinates(row: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
-    """Return latitude/longitude from heterogeneous Supabase payloads."""
-
-    latitude: Optional[float] = None
-    longitude: Optional[float] = None
-
-    latitude_keys = [
-        "latitude",
-        "lat",
-        "Latitude",
-        "Latitude_deg",
-    ]
-    longitude_keys = [
-        "longitude",
-        "lon",
-        "lng",
-        "Longitude",
-        "Longitude_deg",
-    ]
-
-    for key in latitude_keys:
-        if key in row:
-            latitude = _coerce_float(row.get(key))
-            if latitude is not None:
-                break
-
-    for key in longitude_keys:
-        if key in row:
-            longitude = _coerce_float(row.get(key))
-            if longitude is not None:
-                break
-
-    if (latitude is None or longitude is None) and isinstance(row.get("location"), dict):
-        location_data = row.get("location")
-        latitude = latitude or _coerce_float(
-            location_data.get("lat") or location_data.get("latitude")
-        )
-        longitude = longitude or _coerce_float(
-            location_data.get("lon")
-            or location_data.get("lng")
-            or location_data.get("longitude")
-        )
-
-    if (latitude is None or longitude is None) and isinstance(row.get("coordinates"), (list, tuple)):
-        coords = row.get("coordinates")
-        if len(coords) >= 2:
-            longitude = longitude or _coerce_float(coords[0])
-            latitude = latitude or _coerce_float(coords[1])
-
-    return latitude, longitude
-
-
-def transform_tec_to_project_schema(tec_row: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Transform a TEC connections database row to unified project schema.
-
-    TEC table has different field names than renewable_projects, so we map them:
-    - project_name → site_name
-    - development_status → development_status_short
-    - Coordinates might be NULL (we'll handle that separately)
-    """
-
-    latitude, longitude = _extract_coordinates(tec_row)
-
-    return {
-        "id": tec_row.get("id"),
-        "ref_id": str(tec_row.get("id", "")),
-        "site_name": tec_row.get("project_name") or "Untitled Project",
-        "project_name": tec_row.get("project_name"),
-        "capacity_mw": _coerce_float(tec_row.get("capacity_mw")) or 0.0,
-        "technology_type": tec_row.get("technology_type") or "Unknown",
-        "development_status_short": tec_row.get("development_status") or "Scoping",
-        "development_status": tec_row.get("development_status"),
-        "constraint_status": tec_row.get("constraint_status"),
-        "connection_site": tec_row.get("connection_site"),
-        "substation_name": tec_row.get("substation_name"),
-        "voltage_kv": _coerce_float(tec_row.get("voltage")),
-        "latitude": latitude,
-        "longitude": longitude,
-        "county": None,
-        "country": "UK",
-        "operator": tec_row.get("operator") or tec_row.get("customer_name"),
-        "_source_table": "tec_connections",
-    }
 
 
 def normalize_frontend_weights(weights: Dict[str, float]) -> Dict[str, float]:
@@ -227,7 +162,6 @@ def normalize_frontend_weights(weights: Dict[str, float]) -> Dict[str, float]:
     Returns:
         Backend weights dict normalized to sum=1.0
     """
-    # Mapping from frontend keys to backend keys
     mapping = {
         "route_to_market": "price_sensitivity",
         "project_stage": "land_planning",
@@ -286,7 +220,7 @@ def map_demand_scale_to_mw(demand_scale: float) -> float:
 
 
 def filter_projects_by_capacity_range(
-    projects: List[Dict[str, Any]],
+    projects: Sequence[Dict[str, Any]],
     persona: PowerDeveloperPersona
 ) -> List[Dict[str, Any]]:
     """
@@ -311,7 +245,7 @@ def filter_projects_by_capacity_range(
 
 
 def apply_capacity_gating(
-    projects: List[Dict[str, Any]],
+    projects: Sequence[Dict[str, Any]],
     user_ideal_mw: float,
     threshold: float = 0.9
 ) -> List[Dict[str, Any]]:
@@ -337,46 +271,6 @@ def apply_capacity_gating(
     return gated
 
 
-def get_color_from_score(internal_score: float) -> str:
-    """Map internal score (0-100) to color code for visualization."""
-    # This function should be imported from main.py or shared module
-    # For now, provide a simple implementation
-    if internal_score >= 90:
-        return "#00FF00"  # Green
-    elif internal_score >= 70:
-        return "#90EE90"  # Light green
-    elif internal_score >= 50:
-        return "#FFFF00"  # Yellow
-    elif internal_score >= 30:
-        return "#FFA500"  # Orange
-    else:
-        return "#FF0000"  # Red
-
-
-def get_rating_description(internal_score: float) -> str:
-    """Map internal score (0-100) to rating description."""
-    # This function should be imported from main.py or shared module
-    # For now, provide a simple implementation
-    if internal_score >= 90:
-        return "Excellent"
-    elif internal_score >= 80:
-        return "Very Good"
-    elif internal_score >= 70:
-        return "Good"
-    elif internal_score >= 60:
-        return "Above Average"
-    elif internal_score >= 50:
-        return "Average"
-    elif internal_score >= 40:
-        return "Below Average"
-    elif internal_score >= 30:
-        return "Poor"
-    elif internal_score >= 20:
-        return "Very Poor"
-    else:
-        return "Bad"
-
-
 # ============================================================================
 # VALIDATION
 # ============================================================================
@@ -389,106 +283,62 @@ for persona_name, weights_dict in POWER_DEVELOPER_PERSONAS.items():
 
 
 # ============================================================================
-# MAIN ENDPOINT
+# MAIN WORKFLOW FUNCTION
 # ============================================================================
 
-async def analyze_for_power_developer(
-    # Import these functions from main.py
-    query_supabase,
-    calculate_proximity_scores_batch,
-    build_persona_component_scores,
+async def run_power_developer_analysis(
+    *,
     # Request parameters
-    custom_weights: Optional[Dict[str, float]] = None,
-    source_table: str = "tec_connections",
-    target_persona: Optional[str] = None,
-    user_ideal_mw: Optional[float] = None,
-    user_max_price_mwh: Optional[float] = None,
-    apply_capacity_filter: bool = True,
-    limit: int = 5000,
-) -> Dict[str, Any]:
+    limit: int,
+    source_table: str,
+    target_persona: str,
+    requested_persona: Optional[str],
+    persona_resolution: str,
+    weights: Dict[str, float],
+    user_ideal_mw: Optional[float],
+    user_max_price_mwh: Optional[float],
+    apply_capacity_filter: bool,
+    # Dependency injection
+    query_supabase: QuerySupabaseFn,
+    transform_tec_to_project_schema: TransformProjectFn,
+    calculate_proximity_scores_batch: CalculateProximityFn,
+    build_persona_component_scores: BuildComponentScoresFn,
+    get_color_from_score: GetScoreColorFn,
+    get_rating_description: GetScoreDescriptionFn,
+) -> PowerDeveloperAnalysisResponse:
     """
-    Power developer workflow - analyzes TEC grid connections for development opportunity.
+    Execute the power developer analysis workflow with Phase 1 & 2 enhancements.
 
-    This workflow mirrors the data center developer workflow, with the following differences:
-    - Source table: tec_connections (instead of renewable_projects)
-    - Schema transformation: TEC rows need field mapping
-    - Persona names: greenfield/repower/stranded (instead of hyperscaler/colocation/edge)
-
-    Workflow:
+    This function encapsulates the scoring pipeline:
     1. Fetch projects from tec_connections table
-    2. Transform to schema (TEC rows → project objects)
+    2. Transform TEC schema to unified project schema
     3. Apply capacity filtering (persona-specific ranges + 90% gating)
-    4. Calculate proximity scores (infrastructure analysis)
+    4. Calculate infrastructure proximity scores
     5. Build component scores (7 business criteria)
-    6. Apply weighted scoring
+    6. Apply persona-weighted scoring
     7. Return scored GeoJSON
 
     Args:
-        query_supabase: Function to query Supabase database
-        calculate_proximity_scores_batch: Function to calculate infrastructure proximity
-        build_persona_component_scores: Function to calculate 7 component scores
-        custom_weights: Frontend weights (0-100 scale) - will be normalized
-        source_table: Data source - "tec_connections" or "renewable_projects"
-        target_persona: Project type - "greenfield", "repower", or "stranded"
-        user_ideal_mw: User's target capacity in MW (affects capacity scoring and filtering)
-        user_max_price_mwh: User's maximum acceptable power price (£/MWh)
-        apply_capacity_filter: Whether to filter by persona capacity ranges
-        limit: Max projects to return (default 5000)
+        limit: Maximum projects to process
+        source_table: Data source ("tec_connections" or "renewable_projects")
+        target_persona: Resolved persona (greenfield/repower/stranded)
+        requested_persona: Original user-provided persona
+        persona_resolution: How persona was resolved (valid/invalid/defaulted)
+        weights: Persona weights (normalized to sum=1.0)
+        user_ideal_mw: Target capacity in MW (Phase 1)
+        user_max_price_mwh: Max acceptable price (Phase 1)
+        apply_capacity_filter: Whether to apply filtering (Phase 2)
+        query_supabase: Function to query database
+        transform_tec_to_project_schema: Function to transform TEC rows
+        calculate_proximity_scores_batch: Function to calculate proximity
+        build_persona_component_scores: Function to build component scores
+        get_color_from_score: Function to get color code
+        get_rating_description: Function to get rating description
 
     Returns:
-        GeoJSON FeatureCollection with scored projects
+        PowerDeveloperAnalysisResponse with scored projects and metadata
     """
-
     start_time = time.time()
-
-    # ========================================================================
-    # STEP 0: Validate Input & Resolve Persona
-    # ========================================================================
-    target_persona, requested_persona, persona_resolution = resolve_power_developer_persona(
-        target_persona
-    )
-
-    if persona_resolution == "defaulted":
-        print("🔄 Power Developer Analysis - Project Type requested: <default>")
-        print("   ℹ️ No project type supplied, defaulting to 'greenfield'")
-    elif persona_resolution == "invalid":
-        print(
-            "🔄 Power Developer Analysis - Project Type requested: "
-            f"{requested_persona}"
-        )
-        print(
-            f"   ⚠️ Invalid project type '{requested_persona}', using 'greenfield'"
-        )
-    else:
-        print(
-            "🔄 Power Developer Analysis - Project Type requested: "
-            f"{requested_persona}"
-        )
-        print(f"   🎯 Using project type '{target_persona}'")
-
-    # ========================================================================
-    # STEP 0A: Process Weights (PHASE 1)
-    # ========================================================================
-    if custom_weights:
-        print(f"   🎚️ Custom weights provided: {len(custom_weights)} criteria")
-        # Normalize frontend weights (0-100) to backend format (sum=1.0)
-        weights = normalize_frontend_weights(custom_weights)
-        print(f"   ✅ Weights normalized: {', '.join([f'{k}={v:.3f}' for k, v in weights.items()])}")
-
-        # Extract demand_scale and convert to user_ideal_mw if not provided
-        if not user_ideal_mw and "demand_scale" in custom_weights:
-            user_ideal_mw = map_demand_scale_to_mw(custom_weights["demand_scale"])
-            print(f"   📏 Extracted user_ideal_mw from demand_scale: {user_ideal_mw} MW")
-    else:
-        # Use persona default weights
-        weights = POWER_DEVELOPER_PERSONAS[target_persona]
-        print(f"   🎯 Using default weights for '{target_persona}' persona")
-
-    # Log user inputs
-    if user_ideal_mw:
-        print(f"   🎯 Target capacity: {user_ideal_mw} MW")
-    if user_max_price_mwh:
-        print(f"   💰 Max price budget: £{user_max_price_mwh}/MWh")
 
     # ========================================================================
     # STEP 1: Fetch Projects from Database
@@ -497,22 +347,30 @@ async def analyze_for_power_developer(
 
     try:
         raw_rows = await query_supabase(f"{source_table}?select=*", limit=limit)
-        if not raw_rows:
-            print("   ⚠️ No projects returned from database")
-            return {
-                "type": "FeatureCollection",
-                "features": [],
-                "metadata": {
-                    "error": "No projects found",
-                    "project_type": target_persona,
-                    "project_type_resolution": persona_resolution,
-                    "requested_project_type": requested_persona or None,
-                },
-            }
-        print(f"   ✅ Loaded {len(raw_rows)} projects")
     except Exception as exc:
         print(f"   ❌ Database error: {exc}")
-        raise HTTPException(500, f"Failed to fetch projects: {str(exc)}")
+        raise HTTPException(500, f"Failed to fetch projects: {exc}")
+
+    if not raw_rows:
+        print("   ⚠️ No projects returned from database")
+        return PowerDeveloperAnalysisResponse(
+            type="FeatureCollection",
+            features=[],
+            metadata={
+                "error": "No projects found",
+                "project_type": target_persona,
+                "project_type_resolution": persona_resolution,
+                "requested_project_type": requested_persona or None,
+                "source_table": source_table,
+                "total_projects_processed": 0,
+                "projects_with_valid_coords": 0,
+                "projects_scored": 0,
+                "processing_time_seconds": round(time.time() - start_time, 2),
+                "algorithm_version": "2.3 - Power Developer Workflow (Enhanced)",
+            },
+        )
+
+    print(f"   ✅ Loaded {len(raw_rows)} projects")
 
     # ========================================================================
     # STEP 2: Transform Rows to Project Schema
@@ -522,29 +380,37 @@ async def analyze_for_power_developer(
     if source_table == "tec_connections":
         projects = [transform_tec_to_project_schema(row) for row in raw_rows]
     else:
-        projects = raw_rows
+        projects = list(raw_rows)
 
     # ========================================================================
     # STEP 3: Filter for Valid Coordinates
     # ========================================================================
     valid_projects = [
-        p for p in projects if p.get("latitude") is not None and p.get("longitude") is not None
+        project
+        for project in projects
+        if project.get("latitude") is not None and project.get("longitude") is not None
     ]
 
     print(f"   📍 Valid coordinates: {len(valid_projects)}/{len(projects)}")
 
     if not valid_projects:
         print("   ⚠️ No projects with valid coordinates")
-        return {
-            "type": "FeatureCollection",
-            "features": [],
-            "metadata": {
+        return PowerDeveloperAnalysisResponse(
+            type="FeatureCollection",
+            features=[],
+            metadata={
                 "warning": "No valid coordinates",
                 "project_type": target_persona,
                 "project_type_resolution": persona_resolution,
                 "requested_project_type": requested_persona or None,
+                "source_table": source_table,
+                "total_projects_processed": len(raw_rows),
+                "projects_with_valid_coords": 0,
+                "projects_scored": 0,
+                "processing_time_seconds": round(time.time() - start_time, 2),
+                "algorithm_version": "2.3 - Power Developer Workflow (Enhanced)",
             },
-        }
+        )
 
     # ========================================================================
     # STEP 3A: Apply Capacity Filtering (PHASE 2)
@@ -572,16 +438,22 @@ async def analyze_for_power_developer(
 
     if not valid_projects:
         print("   ⚠️ No projects passed capacity filtering")
-        return {
-            "type": "FeatureCollection",
-            "features": [],
-            "metadata": {
+        return PowerDeveloperAnalysisResponse(
+            type="FeatureCollection",
+            features=[],
+            metadata={
                 "warning": "No projects meet capacity requirements",
                 "project_type": target_persona,
                 "capacity_filter_applied": apply_capacity_filter,
                 "user_ideal_mw": user_ideal_mw,
+                "source_table": source_table,
+                "total_projects_processed": len(raw_rows),
+                "projects_with_valid_coords": len(valid_projects),
+                "projects_scored": 0,
+                "processing_time_seconds": round(time.time() - start_time, 2),
+                "algorithm_version": "2.3 - Power Developer Workflow (Enhanced)",
             },
-        }
+        )
 
     # ========================================================================
     # STEP 4: Calculate Infrastructure Proximity Scores
@@ -590,7 +462,7 @@ async def analyze_for_power_developer(
 
     try:
         all_proximity_scores = await calculate_proximity_scores_batch(valid_projects)
-        print(f"   ✅ Proximity calculations complete")
+        print("   ✅ Proximity calculations complete")
     except Exception as exc:
         print(f"   ❌ Proximity calculation error: {exc}")
         raise
@@ -600,7 +472,7 @@ async def analyze_for_power_developer(
     # ========================================================================
     print(f"   🔄 Scoring {len(valid_projects)} projects as '{target_persona}'...")
 
-    features: List[Dict[str, Any]] = []
+    features: List[PowerDeveloperFeature] = []
 
     for index, project in enumerate(valid_projects):
         try:
@@ -633,7 +505,6 @@ async def analyze_for_power_developer(
                 component_scores.get(criterion, 0) * weights.get(criterion, 0)
                 for criterion in component_scores
             )
-
             weighted_score = max(0.0, min(100.0, weighted_score))
 
             # STEP 5C: Convert to display format (0-10 scale)
@@ -658,7 +529,8 @@ async def analyze_for_power_developer(
                 "color_code": color_code,
                 "component_scores": {k: round(v, 1) for k, v in component_scores.items()},
                 "weighted_contributions": {
-                    k: round(component_scores[k] * weights.get(k, 0), 1) for k in component_scores
+                    key: round(component_scores[key] * weights.get(key, 0), 1)
+                    for key in component_scores
                 },
                 "project_type": target_persona,
                 "project_type_weights": weights,
@@ -667,14 +539,14 @@ async def analyze_for_power_developer(
             }
 
             # STEP 5E: Build GeoJSON feature
-            feature = {
-                "type": "Feature",
-                "geometry": {
+            feature = PowerDeveloperFeature(
+                type="Feature",
+                geometry={
                     "type": "Point",
                     "coordinates": [project["longitude"], project["latitude"]],
                 },
-                "properties": properties,
-            }
+                properties=properties,
+            )
 
             features.append(feature)
 
@@ -687,7 +559,7 @@ async def analyze_for_power_developer(
     # ========================================================================
     features_sorted = sorted(
         features,
-        key=lambda f: f.get("properties", {}).get("investment_rating", 0),
+        key=lambda feature: feature.properties.get("investment_rating", 0),
         reverse=True,
     )
 
@@ -695,40 +567,257 @@ async def analyze_for_power_developer(
     # STEP 7: Log Results and Return
     # ========================================================================
     processing_time = time.time() - start_time
-
     print(f"   ✅ Scoring complete: {len(features_sorted)} projects in {processing_time:.2f}s")
 
     if features_sorted:
-        top = features_sorted[0]["properties"]
+        top = features_sorted[0].properties
         print(
-            f"   🏆 Top project: {top.get('project_name')} - "
-            f"Rating {top.get('investment_rating')}/10 • {top.get('capacity_mw')}MW"
+            "   🏆 Top project: "
+            f"{top.get('project_name')} - Rating {top.get('investment_rating')}/10 • "
+            f"{top.get('capacity_mw')}MW"
         )
 
-    return {
-        "type": "FeatureCollection",
-        "features": features_sorted,
-        "metadata": {
-            "scoring_system": "Power Developer - Project Type Analysis",
-            "project_type": target_persona,
-            "project_type_weights": weights,
-            "requested_project_type": requested_persona or None,
-            "project_type_resolution": persona_resolution,
-            "source_table": source_table,
-            "total_projects_processed": len(raw_rows),
-            "projects_with_valid_coords": len(valid_projects),
-            "projects_scored": len(features_sorted),
-            "processing_time_seconds": round(processing_time, 2),
-            "algorithm_version": "2.3 - Power Developer Workflow (Enhanced)",
-            "user_ideal_mw": user_ideal_mw,
-            "user_max_price_mwh": user_max_price_mwh,
-            "capacity_filter_applied": apply_capacity_filter,
-            "rating_scale": {
-                "9.0-10.0": "Excellent",
-                "8.0-8.9": "Very Good",
-                "7.0-7.9": "Good",
-                "6.0-6.9": "Above Average",
-                "5.0-5.9": "Average",
-            },
+    metadata = {
+        "scoring_system": "Power Developer - Project Type Analysis",
+        "project_type": target_persona,
+        "project_type_weights": weights,
+        "requested_project_type": requested_persona or None,
+        "project_type_resolution": persona_resolution,
+        "source_table": source_table,
+        "total_projects_processed": len(raw_rows),
+        "projects_with_valid_coords": len(valid_projects),
+        "projects_scored": len(features_sorted),
+        "processing_time_seconds": round(processing_time, 2),
+        "algorithm_version": "2.3 - Power Developer Workflow (Enhanced)",
+        "user_ideal_mw": user_ideal_mw,
+        "user_max_price_mwh": user_max_price_mwh,
+        "capacity_filter_applied": apply_capacity_filter,
+        "rating_scale": {
+            "9.0-10.0": "Excellent",
+            "8.0-8.9": "Very Good",
+            "7.0-7.9": "Good",
+            "6.0-6.9": "Above Average",
+            "5.0-5.9": "Average",
         },
     }
+
+    return PowerDeveloperAnalysisResponse(
+        type="FeatureCollection",
+        features=features_sorted,
+        metadata=metadata,
+    )
+
+
+# ============================================================================
+# LEGACY WRAPPER (for backward compatibility)
+# ============================================================================
+
+async def analyze_for_power_developer(
+    # Dependency injection
+    query_supabase,
+    calculate_proximity_scores_batch,
+    build_persona_component_scores,
+    # Request parameters
+    custom_weights: Optional[Dict[str, float]] = None,
+    source_table: str = "tec_connections",
+    target_persona: Optional[str] = None,
+    user_ideal_mw: Optional[float] = None,
+    user_max_price_mwh: Optional[float] = None,
+    apply_capacity_filter: bool = True,
+    limit: int = 5000,
+) -> Dict[str, Any]:
+    """
+    Legacy wrapper for backward compatibility with main.py.
+
+    Calls run_power_developer_analysis() with all necessary transformations.
+    """
+    # Resolve persona
+    resolved_persona, requested_persona, persona_resolution = resolve_power_developer_persona(
+        target_persona
+    )
+
+    # Log persona resolution
+    if persona_resolution == "defaulted":
+        print("🔄 Power Developer Analysis - Project Type requested: <default>")
+        print("   ℹ️ No project type supplied, defaulting to 'greenfield'")
+    elif persona_resolution == "invalid":
+        print(f"🔄 Power Developer Analysis - Project Type requested: {requested_persona}")
+        print(f"   ⚠️ Invalid project type '{requested_persona}', using 'greenfield'")
+    else:
+        print(f"🔄 Power Developer Analysis - Project Type requested: {requested_persona}")
+        print(f"   🎯 Using project type '{resolved_persona}'")
+
+    # Process weights (PHASE 1)
+    if custom_weights:
+        print(f"   🎚️ Custom weights provided: {len(custom_weights)} criteria")
+        weights = normalize_frontend_weights(custom_weights)
+        print(f"   ✅ Weights normalized: {', '.join([f'{k}={v:.3f}' for k, v in weights.items()])}")
+
+        # Extract demand_scale and convert to user_ideal_mw if not provided
+        if not user_ideal_mw and "demand_scale" in custom_weights:
+            user_ideal_mw = map_demand_scale_to_mw(custom_weights["demand_scale"])
+            print(f"   📏 Extracted user_ideal_mw from demand_scale: {user_ideal_mw} MW")
+    else:
+        weights = POWER_DEVELOPER_PERSONAS[resolved_persona]
+        print(f"   🎯 Using default weights for '{resolved_persona}' persona")
+
+    # Log user inputs
+    if user_ideal_mw:
+        print(f"   🎯 Target capacity: {user_ideal_mw} MW")
+    if user_max_price_mwh:
+        print(f"   💰 Max price budget: £{user_max_price_mwh}/MWh")
+
+    # Import helper functions from global scope
+    from backend.power_workflow import (
+        _extract_coordinates,
+        _coerce_float,
+    )
+
+    def transform_tec_to_project_schema(tec_row: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform TEC row to unified schema."""
+        latitude, longitude = _extract_coordinates(tec_row)
+        return {
+            "id": tec_row.get("id"),
+            "ref_id": str(tec_row.get("id", "")),
+            "site_name": tec_row.get("project_name") or "Untitled Project",
+            "project_name": tec_row.get("project_name"),
+            "capacity_mw": _coerce_float(tec_row.get("capacity_mw")) or 0.0,
+            "technology_type": tec_row.get("technology_type") or "Unknown",
+            "development_status_short": tec_row.get("development_status") or "Scoping",
+            "development_status": tec_row.get("development_status"),
+            "constraint_status": tec_row.get("constraint_status"),
+            "connection_site": tec_row.get("connection_site"),
+            "substation_name": tec_row.get("substation_name"),
+            "voltage_kv": _coerce_float(tec_row.get("voltage")),
+            "latitude": latitude,
+            "longitude": longitude,
+            "county": None,
+            "country": "UK",
+            "operator": tec_row.get("operator") or tec_row.get("customer_name"),
+            "_source_table": "tec_connections",
+        }
+
+    def get_color_from_score_impl(internal_score: float) -> str:
+        """Simple color coding implementation."""
+        if internal_score >= 90:
+            return "#00FF00"
+        elif internal_score >= 70:
+            return "#90EE90"
+        elif internal_score >= 50:
+            return "#FFFF00"
+        elif internal_score >= 30:
+            return "#FFA500"
+        else:
+            return "#FF0000"
+
+    def get_rating_description_impl(internal_score: float) -> str:
+        """Simple rating description implementation."""
+        if internal_score >= 90:
+            return "Excellent"
+        elif internal_score >= 80:
+            return "Very Good"
+        elif internal_score >= 70:
+            return "Good"
+        elif internal_score >= 60:
+            return "Above Average"
+        elif internal_score >= 50:
+            return "Average"
+        elif internal_score >= 40:
+            return "Below Average"
+        elif internal_score >= 30:
+            return "Poor"
+        elif internal_score >= 20:
+            return "Very Poor"
+        else:
+            return "Bad"
+
+    # Call the main workflow function
+    response = await run_power_developer_analysis(
+        limit=limit,
+        source_table=source_table,
+        target_persona=resolved_persona,
+        requested_persona=requested_persona,
+        persona_resolution=persona_resolution,
+        weights=weights,
+        user_ideal_mw=user_ideal_mw,
+        user_max_price_mwh=user_max_price_mwh,
+        apply_capacity_filter=apply_capacity_filter,
+        query_supabase=query_supabase,
+        transform_tec_to_project_schema=transform_tec_to_project_schema,
+        calculate_proximity_scores_batch=calculate_proximity_scores_batch,
+        build_persona_component_scores=build_persona_component_scores,
+        get_color_from_score=get_color_from_score_impl,
+        get_rating_description=get_rating_description_impl,
+    )
+
+    # Convert Pydantic model to dict for backward compatibility
+    return {
+        "type": response.type,
+        "features": [
+            {
+                "type": f.type,
+                "geometry": f.geometry,
+                "properties": f.properties,
+            }
+            for f in response.features
+        ],
+        "metadata": response.metadata,
+    }
+
+
+# ============================================================================
+# HELPER FUNCTIONS (for transform_tec_to_project_schema)
+# ============================================================================
+
+def _coerce_float(value: Any) -> Optional[float]:
+    """Safely coerce a value to float, returning None if not possible."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _extract_coordinates(row: Dict[str, Any]) -> Tuple[Optional[float], Optional[float]]:
+    """Return latitude/longitude from heterogeneous Supabase payloads."""
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
+    latitude_keys = ["latitude", "lat", "Latitude", "Latitude_deg"]
+    longitude_keys = ["longitude", "lon", "lng", "Longitude", "Longitude_deg"]
+
+    for key in latitude_keys:
+        if key in row:
+            latitude = _coerce_float(row.get(key))
+            if latitude is not None:
+                break
+
+    for key in longitude_keys:
+        if key in row:
+            longitude = _coerce_float(row.get(key))
+            if longitude is not None:
+                break
+
+    if (latitude is None or longitude is None) and isinstance(row.get("location"), dict):
+        location_data = row.get("location")
+        latitude = latitude or _coerce_float(
+            location_data.get("lat") or location_data.get("latitude")
+        )
+        longitude = longitude or _coerce_float(
+            location_data.get("lon")
+            or location_data.get("lng")
+            or location_data.get("longitude")
+        )
+
+    if (latitude is None or longitude is None) and isinstance(row.get("coordinates"), (list, tuple)):
+        coords = row.get("coordinates")
+        if len(coords) >= 2:
+            longitude = longitude or _coerce_float(coords[0])
+            latitude = latitude or _coerce_float(coords[1])
+
+    return latitude, longitude
