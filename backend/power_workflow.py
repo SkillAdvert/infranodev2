@@ -6,6 +6,12 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Litera
 
 from fastapi import HTTPException
 
+from backend.scoring import (
+    build_persona_component_scores,
+    get_color_from_score,
+    get_rating_description,
+)
+
 PowerDeveloperPersona = Literal["greenfield", "repower", "stranded"]
 
 POWER_DEVELOPER_PERSONAS: Dict[str, Dict[str, float]] = {
@@ -53,9 +59,6 @@ for persona_name, weights_dict in POWER_DEVELOPER_PERSONAS.items():
 
 QuerySupabaseFn = Callable[..., Awaitable[Any]]
 ProximityBatchFn = Callable[[List[Dict[str, Any]]], Awaitable[List[Dict[str, float]]]]
-BuildPersonaComponentScoresFn = Callable[..., Dict[str, float]]
-ColorFromScoreFn = Callable[[float], str]
-RatingDescriptionFn = Callable[[float], str]
 
 
 def resolve_power_developer_persona(
@@ -188,9 +191,6 @@ async def run_power_developer_analysis(
     source_table: str,
     query_supabase: QuerySupabaseFn,
     calculate_proximity_scores_batch: ProximityBatchFn,
-    build_persona_component_scores: BuildPersonaComponentScoresFn,
-    get_color_from_score: ColorFromScoreFn,
-    get_rating_description: RatingDescriptionFn,
 ) -> Dict[str, Any]:
     """Execute the power developer workflow using supplied dependencies."""
 
