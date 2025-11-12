@@ -956,6 +956,121 @@ def filter_projects_by_persona_capacity(
     return filtered
 
 
+def calculate_base_investment_score_renewable(project: Dict[str, Any]) -> float:
+    """Calculate base investment score for renewable energy projects.
+
+    Combines technology score, capacity score, and development stage score.
+    Returns a value between 0-100.
+    """
+    # Get project attributes
+    technology = project.get("technology_type", "")
+    capacity_mw = project.get("capacity_mw", 0)
+    development_status = project.get("development_status_short", "unknown")
+
+    try:
+        capacity_mw = float(capacity_mw) if capacity_mw else 0
+    except (ValueError, TypeError):
+        capacity_mw = 0
+
+    # Calculate component scores
+    tech_score = calculate_technology_score(technology)
+    capacity_score = calculate_capacity_component_score(capacity_mw, persona="greenfield")
+    dev_score = calculate_development_stage_score(development_status, perspective="supply")
+
+    # Weighted combination (technology 40%, capacity 40%, development 20%)
+    base_score = (tech_score * 0.4) + (capacity_score * 0.4) + (dev_score * 0.2)
+
+    return max(0.0, min(100.0, float(base_score)))
+
+
+def calculate_infrastructure_bonus_renewable(proximity_scores: Dict[str, float]) -> float:
+    """Calculate infrastructure proximity bonus for renewable energy projects.
+
+    Scores based on proximity to substations, transmission, and water resources.
+    Returns a value between 0-100.
+    """
+    # Weight the infrastructure proximity factors
+    substation_score = proximity_scores.get("substation_score", 0.0) * 0.35
+    transmission_score = proximity_scores.get("transmission_score", 0.0) * 0.40
+    water_score = proximity_scores.get("water_score", 0.0) * 0.25
+
+    infrastructure_bonus = substation_score + transmission_score + water_score
+
+    return max(0.0, min(100.0, float(infrastructure_bonus)))
+
+
+async def enrich_and_rescore_top_25_with_tnuos(
+    features: List[Dict[str, Any]], persona: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """Enrich top 25 projects with TNUoS scoring and rescore them.
+
+    Identifies top 25 projects, calculates TNUoS scores based on location,
+    and incorporates that into the investment rating.
+    """
+    if not features:
+        return features
+
+    # Extract valid features with ratings
+    valid_features = [
+        f for f in features
+        if isinstance(f, dict)
+        and isinstance(f.get("properties"), dict)
+        and f["properties"].get("investment_rating") is not None
+    ]
+
+    if not valid_features:
+        return features
+
+    # Sort by investment rating (descending) and take top 25
+    def _coerce_rating(value: Any) -> Optional[float]:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    valid_features.sort(
+        key=lambda f: _coerce_rating(f["properties"].get("investment_rating")) or -float("inf"),
+        reverse=True,
+    )
+
+    top_25 = valid_features[:25]
+
+    # Enrich each top 25 feature with TNUoS score
+    for feature in top_25:
+        try:
+            props = feature.get("properties", {})
+            coords = feature.get("geometry", {}).get("coordinates")
+
+            if coords and len(coords) >= 2:
+                lon, lat = coords[0], coords[1]
+
+                # Calculate TNUoS score for this location
+                tnuos_score = calculate_tnuos_score(lat, lon)
+
+                # Normalize TNUoS score to 0-100 range
+                tnuos_normalized = tnuos_score  # already in 0-100
+
+                # Get current investment rating
+                current_rating = _coerce_rating(props.get("investment_rating")) or 5.0
+
+                # Blend TNUoS into the score (30% TNUoS, 70% existing rating)
+                tnuos_display_score = tnuos_normalized / 10.0  # Convert to 0-10 scale
+                blended_rating = (current_rating * 0.7) + (tnuos_display_score * 0.3)
+
+                # Update properties with TNUoS info
+                props["tnuos_score"] = round(tnuos_score, 1)
+                props["tnuos_adjusted_rating"] = round(blended_rating, 1)
+                props["investment_rating"] = round(blended_rating, 1)
+                props["rating_description"] = get_rating_description(blended_rating * 10)
+                props["color_code"] = get_color_from_score(blended_rating * 10)
+
+        except Exception:  # pragma: no cover
+            # If TNUoS enrichment fails for a project, leave it unchanged
+            pass
+
+    return features
+
+
 __all__ = [
     "PersonaType",
     "PERSONA_WEIGHTS",
@@ -984,5 +1099,8 @@ __all__ = [
     "calculate_custom_weighted_score",
     "calculate_best_customer_match",
     "filter_projects_by_persona_capacity",
+    "calculate_base_investment_score_renewable",
+    "calculate_infrastructure_bonus_renewable",
+    "enrich_and_rescore_top_25_with_tnuos",
 ]
 
