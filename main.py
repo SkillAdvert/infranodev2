@@ -23,18 +23,26 @@ from backend.power_workflow import (
     transform_tec_to_project_schema,
 )
 from backend.scoring import (
+    INFRASTRUCTURE_HALF_DISTANCE_KM,
     PERSONA_CAPACITY_RANGES,
     PERSONA_WEIGHTS,
     PersonaType,
     build_persona_component_scores,
     calculate_best_customer_match,
+    calculate_capacity_component_score,
     calculate_custom_weighted_score,
+    calculate_development_stage_score,
+    calculate_digital_infrastructure_score,
+    calculate_grid_infrastructure_score,
+    calculate_lcoe_score,
     calculate_persona_topsis_score,
     calculate_persona_weighted_score,
+    calculate_tnuos_score,
+    calculate_technology_score,
+    calculate_water_resources_score,
     filter_projects_by_persona_capacity,
     get_color_from_score,
     get_rating_description,
-    INFRASTRUCTURE_HALF_DISTANCE_KM,
 )
 from backend.proximity import (
     InfrastructureCatalog,
@@ -763,6 +771,116 @@ INFRASTRUCTURE_SEARCH_RADIUS_KM = {
 }
 
 
+RENEWABLE_BASE_COMPONENT_WEIGHTS: Dict[str, float] = {
+    "capacity": 0.25,
+    "development_stage": 0.28,
+    "technology": 0.17,
+    "lcoe_resource_quality": 0.15,
+    "tnuos_transmission_costs": 0.15,
+}
+
+RENEWABLE_INFRASTRUCTURE_COMPONENT_WEIGHTS: Dict[str, float] = {
+    "grid_infrastructure": 0.45,
+    "digital_infrastructure": 0.35,
+    "water_resources": 0.20,
+}
+
+RENEWABLE_BASE_MAX_SCORE = 85.0
+RENEWABLE_INFRASTRUCTURE_SCALING = 0.30
+RENEWABLE_INFRASTRUCTURE_MAX_BONUS = 25.0
+
+
+def calculate_base_investment_score_renewable(
+    project: Dict[str, Any]
+) -> Tuple[float, Dict[str, float], Dict[str, float]]:
+    """Combine project fundamentals into a 0-100 base investment score."""
+
+    capacity_score = calculate_capacity_component_score(project.get("capacity_mw", 0) or 0.0)
+    development_status = (
+        project.get("development_status_short")
+        or project.get("development_status")
+        or ""
+    )
+    stage_score = calculate_development_stage_score(development_status)
+    technology_score = calculate_technology_score(project.get("technology_type", ""))
+    lcoe_score = calculate_lcoe_score(development_status)
+
+    latitude = _coerce_float(project.get("latitude"))
+    longitude = _coerce_float(project.get("longitude"))
+    if latitude is None or longitude is None:
+        tnuos_score = 50.0
+    else:
+        tnuos_score = calculate_tnuos_score(latitude, longitude)
+
+    components = {
+        "capacity": float(capacity_score),
+        "development_stage": float(stage_score),
+        "technology": float(technology_score),
+        "lcoe_resource_quality": float(lcoe_score),
+        "tnuos_transmission_costs": float(tnuos_score),
+    }
+
+    weighted_components = {
+        key: components[key] * weight
+        for key, weight in RENEWABLE_BASE_COMPONENT_WEIGHTS.items()
+    }
+
+    weighted_total = sum(weighted_components.values())
+    base_score = max(0.0, min(RENEWABLE_BASE_MAX_SCORE, weighted_total))
+
+    contribution_scale = 0.0
+    if weighted_total > 0:
+        contribution_scale = base_score / weighted_total
+
+    contributions = {
+        key: weighted_components[key] * contribution_scale
+        for key in weighted_components
+    }
+
+    return base_score, components, contributions
+
+
+def calculate_infrastructure_bonus_renewable(
+    proximity_scores: Dict[str, float]
+) -> Tuple[float, Dict[str, float], Dict[str, float]]:
+    """Translate proximity-derived scores into an infrastructure bonus."""
+
+    grid_score = calculate_grid_infrastructure_score(proximity_scores)
+    digital_score = calculate_digital_infrastructure_score(proximity_scores)
+    water_score = calculate_water_resources_score(proximity_scores)
+
+    components = {
+        "grid_infrastructure": float(grid_score),
+        "digital_infrastructure": float(digital_score),
+        "water_resources": float(water_score),
+    }
+
+    weighted_components = {
+        key: components[key] * weight
+        for key, weight in RENEWABLE_INFRASTRUCTURE_COMPONENT_WEIGHTS.items()
+    }
+
+    raw_bonus = sum(weighted_components.values()) * RENEWABLE_INFRASTRUCTURE_SCALING
+    infrastructure_bonus = max(
+        0.0, min(RENEWABLE_INFRASTRUCTURE_MAX_BONUS, raw_bonus)
+    )
+
+    raw_contributions = {
+        key: weighted_components[key] * RENEWABLE_INFRASTRUCTURE_SCALING
+        for key in weighted_components
+    }
+    raw_total = sum(raw_contributions.values())
+    contribution_scale = 0.0
+    if raw_total > 0:
+        contribution_scale = infrastructure_bonus / raw_total
+
+    contributions = {
+        key: raw_contributions[key] * contribution_scale for key in raw_contributions
+    }
+
+    return infrastructure_bonus, components, contributions
+
+
 def calculate_enhanced_investment_rating(
     project: Dict[str, Any],
     proximity_scores: Dict[str, float],
@@ -771,12 +889,26 @@ def calculate_enhanced_investment_rating(
     if persona is not None:
         return calculate_persona_weighted_score(project, proximity_scores, persona)
 
-    base_score = calculate_base_investment_score_renewable(project)
-    infrastructure_bonus = calculate_infrastructure_bonus_renewable(proximity_scores)
+    base_score, base_components, base_contributions = calculate_base_investment_score_renewable(project)
+    (
+        infrastructure_bonus,
+        infrastructure_components,
+        infrastructure_contributions,
+    ) = calculate_infrastructure_bonus_renewable(proximity_scores)
     total_internal_score = min(100.0, base_score + infrastructure_bonus)
     display_rating = total_internal_score / 10.0
     color = get_color_from_score(total_internal_score)
     description = get_rating_description(total_internal_score)
+
+    combined_components = {
+        **{key: round(value, 1) for key, value in base_components.items()},
+        **{key: round(value, 1) for key, value in infrastructure_components.items()},
+    }
+
+    combined_contributions = {
+        **{key: round(value, 1) for key, value in base_contributions.items()},
+        **{key: round(value, 1) for key, value in infrastructure_contributions.items()},
+    }
 
     return {
         "base_investment_score": round(base_score / 10.0, 1),
@@ -786,6 +918,8 @@ def calculate_enhanced_investment_rating(
         "color_code": color,
         "nearest_infrastructure": proximity_scores.get("nearest_distances", {}),
         "internal_total_score": round(total_internal_score, 1),
+        "component_scores": combined_components,
+        "weighted_contributions": combined_contributions,
         "scoring_methodology": "Traditional renewable energy scoring (10-100 internal, 1.0-10.0 display)",
     }
 
