@@ -2270,7 +2270,6 @@ def transform_tec_row_to_feature(row: Dict[str, Any]) -> Optional[TecConnectionF
         lat, lon = extract_coordinates(row)
 
         if lat is None or lon is None:
-            print(f"⚠️ Skip TEC '{row.get('project_name')}' - no coords")
             return None
 
         capacity_mw = _coerce_float(row.get("capacity_mw"))
