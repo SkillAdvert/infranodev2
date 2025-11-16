@@ -1721,29 +1721,44 @@ async def get_substations() -> Dict[str, Any]:
 
 @app.get("/api/infrastructure/gsp")
 async def get_gsp_boundaries() -> Dict[str, Any]:
-    boundaries = await query_supabase("electrical_grid?type=eq.gsp_boundary&select=*")
-    features: List[Dict[str, Any]] = []
-    for boundary in boundaries or []:
-        geometry = boundary.get("geometry")
-        if not geometry:
-            continue
-        if isinstance(geometry, str):
-            try:
-                geometry = json.loads(geometry)
-            except json.JSONDecodeError:
+    """Return GSP boundaries as GeoJSON FeatureCollection.
+
+    Reads from gsp_boundaries table which stores geometry in GeoJSON format.
+    """
+    try:
+        print("🔄 Fetching GSP boundaries from database...")
+
+        # Query gsp_boundaries table (geometry already in GeoJSON format)
+        boundaries = await query_supabase("gsp_boundaries?select=*")
+
+        features: List[Dict[str, Any]] = []
+
+        for boundary in boundaries or []:
+            geometry = boundary.get("geometry")
+
+            if not geometry:
                 continue
-        features.append(
-            {
-                "type": "Feature",
-                "geometry": geometry,
-                "properties": {
-                    "name": boundary.get("name"),
-                    "operator": boundary.get("operator", "NESO"),
-                    "type": "gsp_boundary",
-                },
-            }
-        )
-    return {"type": "FeatureCollection", "features": features}
+
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": geometry,
+                    "properties": {
+                        "id": boundary.get("id"),
+                        "name": boundary.get("name"),
+                        "operator": boundary.get("operator", "NESO"),
+                        "type": boundary.get("type", "gsp_boundary"),
+                    },
+                }
+            )
+
+        print(f"✅ Returning {len(features)} GSP boundaries")
+
+        return {"type": "FeatureCollection", "features": features}
+
+    except Exception as exc:
+        print(f"❌ GSP boundaries endpoint error: {exc}")
+        raise HTTPException(500, f"Failed to fetch GSP boundaries: {exc}")
 
 
 @app.get("/api/infrastructure/fiber")
