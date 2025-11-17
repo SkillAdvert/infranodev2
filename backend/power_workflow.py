@@ -214,8 +214,9 @@ if criteria and isinstance(criteria, dict):
     # Normalize to sum=1.0
     total = sum(parsed_custom_weights.values())
     if total:
-        parsed_custom_weights = {k: v/total for k, v in parsed_custom_weights.items()}    start_time = time.time()
-
+        parsed_custom_weights = {k: v/total for k, v in parsed_custom_weights.items()}   
+        
+    start_time = time.time()
     (
         target_persona,
         requested_persona,
