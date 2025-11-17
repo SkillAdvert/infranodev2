@@ -194,28 +194,28 @@ async def run_power_developer_analysis(
 ) -> Dict[str, Any]:
     """Execute the power developer workflow using supplied dependencies."""
 
-parsed_custom_weights = None
-if criteria and isinstance(criteria, dict):
-    # Map frontend field names to backend field names
-    field_mapping = {
-        'connection_headroom': 'connection_speed',
-        'route_to_market': 'price_sensitivity',
-        'project_stage': 'land_planning',
-        'demand_scale': 'capacity',
-        'grid_infrastructure': 'resilience',
-        'digital_infrastructure': 'latency',
-        'water_resources': 'cooling',
-    }
-    parsed_custom_weights = {
-        field_mapping.get(k, k): v 
-        for k, v in criteria.items() 
-        if isinstance(v, (int, float))
-    }
-    # Normalize to sum=1.0
-    total = sum(parsed_custom_weights.values())
-    if total:
-        parsed_custom_weights = {k: v/total for k, v in parsed_custom_weights.items()}   
-        
+    parsed_custom_weights = None
+    if criteria and isinstance(criteria, dict):
+        # Map frontend field names to backend field names
+        field_mapping = {
+            'connection_headroom': 'connection_speed',
+            'route_to_market': 'price_sensitivity',
+            'project_stage': 'land_planning',
+            'demand_scale': 'capacity',
+            'grid_infrastructure': 'resilience',
+            'digital_infrastructure': 'latency',
+            'water_resources': 'cooling',
+        }
+        parsed_custom_weights = {
+            field_mapping.get(k, k): v 
+            for k, v in criteria.items() 
+            if isinstance(v, (int, float))
+        }
+        # Normalize to sum=1.0
+        total = sum(parsed_custom_weights.values())
+        if total:
+            parsed_custom_weights = {k: v/total for k, v in parsed_custom_weights.items()}
+
     start_time = time.time()
     (
         target_persona,
