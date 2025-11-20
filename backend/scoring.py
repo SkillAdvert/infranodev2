@@ -10,7 +10,7 @@ preserving workflow-specific orchestration elsewhere.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Literal
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Literal, cast
 
 
 PersonaType = Literal["hyperscaler", "colocation", "edge_computing"]
@@ -624,6 +624,13 @@ def _get_persona_tuning(persona: PersonaType) -> Dict[str, float]:
     return PERSONA_SCORING_TUNING.get(persona, PERSONA_SCORING_TUNING["default"])
 
 
+def _resolve_persona_key_for_tuning(persona_label: Optional[str]) -> PersonaType:
+    persona_key = (persona_label or "default").lower()
+    if persona_key not in PERSONA_SCORING_TUNING:
+        persona_key = "default"
+    return cast(PersonaType, persona_key)
+
+
 def _compute_posterior_persona_weights(
     persona: PersonaType,
     base_weights: Dict[str, float],
@@ -687,15 +694,56 @@ def calculate_persona_weighted_score(
         shared_component_scores,
     )
 
-    normalized_scores = _normalize_component_scores(component_scores)
-    posterior_weights, evidence_strength = _compute_posterior_persona_weights(
-        persona, baseline_weights, normalized_scores
-    )
-    target_alignment = _calculate_target_alignment(
-        persona, normalized_scores, posterior_weights
+    persona_for_tuning = _resolve_persona_key_for_tuning(persona)
+    return _calculate_weighted_score_with_weights(
+        component_scores,
+        baseline_weights,
+        persona,
+        proximity_scores,
+        persona_for_tuning,
     )
 
-    tuning = _get_persona_tuning(persona)
+
+def calculate_weighted_score_from_components(
+    component_scores: Dict[str, float],
+    baseline_weights: Dict[str, float],
+    persona_label: Optional[str] = None,
+    proximity_scores: Optional[Dict[str, float]] = None,
+) -> Dict[str, Any]:
+    """Apply persona-style weighting to precomputed component scores.
+
+    This mirrors :func:`calculate_persona_weighted_score` but accepts explicit
+    weights, making it suitable for workflows (like power developer) that
+    define their own weight schemas while reusing the data center scoring
+    pipeline.
+    """
+
+    persona_for_tuning = _resolve_persona_key_for_tuning(persona_label)
+    return _calculate_weighted_score_with_weights(
+        component_scores,
+        baseline_weights,
+        persona_label or persona_for_tuning,
+        proximity_scores or {},
+        persona_for_tuning,
+    )
+
+
+def _calculate_weighted_score_with_weights(
+    component_scores: Dict[str, float],
+    baseline_weights: Dict[str, float],
+    persona_label: str,
+    proximity_scores: Dict[str, float],
+    persona_for_tuning: PersonaType,
+) -> Dict[str, Any]:
+    normalized_scores = _normalize_component_scores(component_scores)
+    posterior_weights, evidence_strength = _compute_posterior_persona_weights(
+        persona_for_tuning, baseline_weights, normalized_scores
+    )
+    target_alignment = _calculate_target_alignment(
+        persona_for_tuning, normalized_scores, posterior_weights
+    )
+
+    tuning = _get_persona_tuning(persona_for_tuning)
     weighted_sum = sum(
         normalized_scores[key] * posterior_weights.get(key, 0.0)
         for key in normalized_scores
@@ -742,7 +790,7 @@ def calculate_persona_weighted_score(
             key: round(value, 1) for key, value in component_scores.items()
         },
         "weighted_contributions": weighted_contributions,
-        "persona": persona,
+        "persona": persona_label,
         "persona_weights": baseline_weights,
         "posterior_persona_weights": {
             key: round(value, 4) for key, value in posterior_weights.items()
@@ -980,6 +1028,7 @@ __all__ = [
     "calculate_price_sensitivity_score",
     "build_persona_component_scores",
     "calculate_persona_weighted_score",
+    "calculate_weighted_score_from_components",
     "calculate_persona_topsis_score",
     "calculate_custom_weighted_score",
     "calculate_best_customer_match",

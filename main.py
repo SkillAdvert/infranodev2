@@ -1967,8 +1967,12 @@ async def analyze_for_power_developer(
     ),
 ) -> Dict[str, Any]:
     raw_criteria = payload.get("criteria") if isinstance(payload, dict) else None
+    ideal_value = payload.get("ideal_mw") if isinstance(payload, dict) else None
+
     if isinstance(raw_criteria, dict):
-        criteria = raw_criteria
+        criteria = {k: v for k, v in raw_criteria.items() if k != "ideal_mw"}
+        if ideal_value is None:
+            ideal_value = raw_criteria.get("ideal_mw")
     elif isinstance(payload, dict):
         criteria = {k: v for k, v in payload.items() if k not in {"ideal_mw", "site_location"}}
     else:
@@ -1976,7 +1980,6 @@ async def analyze_for_power_developer(
 
     site_location = payload.get("site_location") if isinstance(payload, dict) else None
 
-    ideal_value = payload.get("ideal_mw") if isinstance(payload, dict) else None
     user_ideal_mw: Optional[float] = None
     try:
         if ideal_value is not None:
