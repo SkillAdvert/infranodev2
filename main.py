@@ -1957,8 +1957,7 @@ async def compare_scoring_systems(
 
 @app.post("/api/projects/power-developer-analysis")
 async def analyze_for_power_developer(
-    criteria: Dict[str, Any] = Body(default_factory=dict),
-    site_location: Optional[Dict[str, float]] = None,
+    payload: Dict[str, Any] = Body(default_factory=dict),
     target_persona: Optional[str] = Query(
         None, description="greenfield, repower, or stranded"
     ),
@@ -1967,14 +1966,34 @@ async def analyze_for_power_developer(
         "tec_connections", description="Source table: tec_connections or renewable_projects"
     ),
 ) -> Dict[str, Any]:
+    raw_criteria = payload.get("criteria") if isinstance(payload, dict) else None
+    if isinstance(raw_criteria, dict):
+        criteria = raw_criteria
+    elif isinstance(payload, dict):
+        criteria = {k: v for k, v in payload.items() if k not in {"ideal_mw", "site_location"}}
+    else:
+        criteria = {}
+
+    site_location = payload.get("site_location") if isinstance(payload, dict) else None
+
+    ideal_value = payload.get("ideal_mw") if isinstance(payload, dict) else None
+    user_ideal_mw: Optional[float] = None
+    try:
+        if ideal_value is not None:
+            parsed_ideal = float(ideal_value)
+            user_ideal_mw = parsed_ideal if parsed_ideal > 0 else None
+    except (TypeError, ValueError):
+        user_ideal_mw = None
+
     return await run_power_developer_analysis(
         criteria=criteria,
-        site_location=site_location,
+        site_location=site_location if isinstance(site_location, dict) else None,
         target_persona=target_persona,
         limit=limit,
         source_table=source_table,
         query_supabase=query_supabase,
         calculate_proximity_scores_batch=calculate_proximity_scores_batch,
+        user_ideal_mw=user_ideal_mw,
     )
 
 
