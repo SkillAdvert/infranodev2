@@ -8,8 +8,7 @@ from fastapi import HTTPException
 
 from backend.scoring import (
     build_persona_component_scores,
-    get_color_from_score,
-    get_rating_description,
+    calculate_weighted_score_from_components,
 )
 
 PowerDeveloperPersona = Literal["greenfield", "repower", "stranded"]
@@ -327,16 +326,12 @@ async def run_power_developer_analysis(
                 user_ideal_mw=user_ideal_mw,
             )
 
-            weighted_score = sum(
-                component_scores.get(criterion, 0) * weights.get(criterion, 0)
-                for criterion in component_scores
+            rating_result = calculate_weighted_score_from_components(
+                component_scores,
+                weights,
+                persona_label=target_persona,
+                proximity_scores=proximity_scores,
             )
-
-            weighted_score = max(0.0, min(100.0, weighted_score))
-
-            display_rating = round(weighted_score / 10.0, 1)
-            color_code = get_color_from_score(weighted_score)
-            rating_description = get_rating_description(weighted_score)
 
             properties = {
                 "id": project.get("ref_id"),
@@ -349,16 +344,14 @@ async def run_power_developer_analysis(
                 "connection_site": project.get("connection_site"),
                 "substation_name": project.get("substation_name"),
                 "voltage_kv": project.get("voltage_kv"),
-                "investment_rating": display_rating,
-                "rating_description": rating_description,
-                "color_code": color_code,
-                "component_scores": {k: round(v, 1) for k, v in component_scores.items()},
-                "weighted_contributions": {
-                    k: round(component_scores[k] * weights.get(k, 0), 1) for k in component_scores
-                },
-                "project_type_weights": weights,
-                "internal_total_score": round(weighted_score, 1),
-                "nearest_infrastructure": proximity_scores.get("nearest_distances", {}),
+                "investment_rating": rating_result["investment_rating"],
+                "rating_description": rating_result["rating_description"],
+                "color_code": rating_result["color_code"],
+                "component_scores": rating_result["component_scores"],
+                "weighted_contributions": rating_result["weighted_contributions"],
+                "project_type_weights": rating_result.get("persona_weights", weights),
+                "internal_total_score": rating_result["internal_total_score"],
+                "nearest_infrastructure": rating_result["nearest_infrastructure"],
             }
 
             feature = {
