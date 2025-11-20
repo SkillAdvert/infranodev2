@@ -191,6 +191,7 @@ async def run_power_developer_analysis(
     source_table: str,
     query_supabase: QuerySupabaseFn,
     calculate_proximity_scores_batch: ProximityBatchFn,
+    user_ideal_mw: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Execute the power developer workflow using supplied dependencies."""
 
@@ -323,6 +324,7 @@ async def run_power_developer_analysis(
                 proximity_scores,
                 persona=target_persona,
                 perspective="demand",
+                user_ideal_mw=user_ideal_mw,
             )
 
             weighted_score = sum(
@@ -406,6 +408,7 @@ async def run_power_developer_analysis(
             "projects_scored": len(features_sorted),
             "processing_time_seconds": round(processing_time, 2),
             "algorithm_version": "2.2 - Power Developer Workflow",
+            "user_ideal_mw": user_ideal_mw,
             "rating_scale": {
                 "9.0-10.0": "Excellent",
                 "8.0-8.9": "Very Good",
