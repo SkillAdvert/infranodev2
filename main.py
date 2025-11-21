@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import math
 import os
@@ -9,7 +10,7 @@ from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, Union, c
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -528,6 +529,89 @@ async def query_supabase(endpoint: str, *, limit: Optional[int] = None, page_siz
 
         print(f"   ✓ Retrieved {len(aggregated_results)} total records")
         return aggregated_results
+
+
+def extract_user_from_jwt(authorization_header: Optional[str]) -> Tuple[Optional[str], str]:
+    default_email = "anonymous"
+    if not authorization_header or not isinstance(authorization_header, str):
+        return None, default_email
+
+    try:
+        scheme, token = authorization_header.split(" ", 1)
+        if scheme.lower() != "bearer":
+            return None, default_email
+    except ValueError:
+        return None, default_email
+
+    parts = token.split(".")
+    if len(parts) < 2:
+        return None, default_email
+
+    payload_segment = parts[1]
+    padding = "=" * (-len(payload_segment) % 4)
+
+    try:
+        decoded_bytes = base64.urlsafe_b64decode(payload_segment + padding)
+        payload = json.loads(decoded_bytes.decode("utf-8"))
+    except Exception:
+        return None, default_email
+
+    user_id = payload.get("sub")
+    user_email = payload.get("email") or default_email
+    return user_id, user_email
+
+
+async def save_workflow_analysis(
+    *,
+    user_id: Optional[str],
+    user_email: str,
+    persona: str,
+    workflow_type: str,
+    request_path: Optional[str],
+    criteria_weights: Dict[str, Any],
+    scoring_method: str,
+    dc_demand_mw: Optional[float],
+    user_ideal_mw: Optional[float],
+    top_5_projects: Sequence[Dict[str, Any]],
+) -> None:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("⚠️ Skipping workflow analysis save: Supabase not configured")
+        return
+
+    payload = {
+        "user_id": user_id,
+        "user_email": user_email or "anonymous",
+        "persona": persona,
+        "workflow_type": workflow_type,
+        "request_path": request_path,
+        "criteria_weights": criteria_weights or {},
+        "scoring_method": scoring_method,
+        "dc_demand_mw": dc_demand_mw,
+        "user_ideal_mw": user_ideal_mw,
+        "top_5_projects": list(top_5_projects)[:5],
+    }
+
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"{SUPABASE_URL}/rest/v1/workflow_analyses",
+                headers=headers,
+                json=payload,
+            )
+
+        if response.status_code not in {200, 201}:
+            print(
+                "⚠️ Workflow analysis save failed "
+                f"({response.status_code}): {response.text}"
+            )
+    except Exception as exc:
+        print(f"⚠️ Workflow analysis save error: {exc}")
 
 
 class InfrastructureCache:
@@ -1217,6 +1301,7 @@ async def score_user_sites(
 
 @app.get("/api/projects/enhanced")
 async def get_enhanced_geojson(
+    request: Request,
     limit: int = Query(5000, description="Number of projects to process"),
     persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring"),
     apply_capacity_filter: bool = Query(True, description="Filter projects by persona capacity requirements"),
@@ -1241,6 +1326,7 @@ async def get_enhanced_geojson(
         description="User's preferred capacity in MW (overrides persona default, sets Gaussian peak)",
     ),
 ) -> Dict[str, Any]:
+    user_id, user_email = extract_user_from_jwt(request.headers.get("authorization"))
     start_time = time.time()
     parsed_custom_weights = None
     if custom_weights:
@@ -1636,6 +1722,24 @@ async def get_enhanced_geojson(
             }
         )
 
+    # Save workflow analysis (fire-and-forget)
+    if persona or parsed_custom_weights:
+        weights_to_save = parsed_custom_weights or PERSONA_WEIGHTS.get(persona, {})
+        asyncio.create_task(
+            save_workflow_analysis(
+                user_id=user_id,
+                user_email=user_email,
+                persona=persona or "custom",
+                workflow_type=persona or "custom_weights",
+                request_path=request.url.path,
+                criteria_weights=weights_to_save,
+                scoring_method=active_scoring_method,
+                dc_demand_mw=dc_demand_mw,
+                user_ideal_mw=user_ideal_mw,
+                top_5_projects=features[:5],
+            )
+        )
+
     return {"type": "FeatureCollection", "features": features, "metadata": metadata}
 
 
@@ -1957,6 +2061,7 @@ async def compare_scoring_systems(
 
 @app.post("/api/projects/power-developer-analysis")
 async def analyze_for_power_developer(
+    request: Request,
     payload: Dict[str, Any] = Body(default_factory=dict),
     target_persona: Optional[str] = Query(
         None, description="greenfield, repower, or stranded"
@@ -1966,6 +2071,7 @@ async def analyze_for_power_developer(
         "tec_connections", description="Source table: tec_connections or renewable_projects"
     ),
 ) -> Dict[str, Any]:
+    user_id, user_email = extract_user_from_jwt(request.headers.get("authorization"))
     raw_criteria = payload.get("criteria") if isinstance(payload, dict) else None
     ideal_value = payload.get("ideal_mw") if isinstance(payload, dict) else None
 
@@ -1988,7 +2094,8 @@ async def analyze_for_power_developer(
     except (TypeError, ValueError):
         user_ideal_mw = None
 
-    return await run_power_developer_analysis(
+    # Save workflow analysis (fire-and-forget)
+    result = await run_power_developer_analysis(
         criteria=criteria,
         site_location=site_location if isinstance(site_location, dict) else None,
         target_persona=target_persona,
@@ -1998,6 +2105,33 @@ async def analyze_for_power_developer(
         calculate_proximity_scores_batch=calculate_proximity_scores_batch,
         user_ideal_mw=user_ideal_mw,
     )
+
+    try:
+        asyncio.create_task(
+            save_workflow_analysis(
+                user_id=user_id,
+                user_email=user_email,
+                persona=target_persona or "greenfield",
+                workflow_type=target_persona or "greenfield",
+                request_path=request.url.path,
+                criteria_weights=criteria if isinstance(criteria, dict) else {},
+                scoring_method="power_developer",
+                dc_demand_mw=None,
+                user_ideal_mw=user_ideal_mw,
+                top_5_projects=[
+                    {
+                        "type": "Feature",
+                        "geometry": feature.get("geometry"),
+                        "properties": feature.get("properties"),
+                    }
+                    for feature in result.get("features", [])[:5]
+                ],
+            )
+        )
+    except Exception as exc:
+        print(f"⚠️ Workflow save task failed: {exc}")
+
+    return result
 
 
 @app.get("/api/projects/customer-match")
