@@ -590,9 +590,13 @@ async def save_workflow_analysis(
     }
 
     try:
+        target_url = f"{SUPABASE_URL}/rest/v1/workflow_analyses"
+        print(f"🔍 DEBUG: Attempting POST to {target_url}")
+        print(f"🔍 DEBUG: Payload keys: {list(payload.keys())}")
+
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
-                f"{SUPABASE_URL}/rest/v1/workflow_analyses",
+                target_url,
                 json=payload,
                 headers={
                     "apikey": SUPABASE_KEY,
@@ -604,7 +608,9 @@ async def save_workflow_analysis(
             if response.status_code in (200, 201):
                 print(f"✅ Workflow saved for {user_email}")
             else:
-                print(f"⚠️ Failed to save workflow: {response.status_code} {response.text}")
+                print(f"⚠️ Failed to save workflow: {response.status_code}")
+                print(f"⚠️ Response: {response.text}")
+                print(f"⚠️ Headers sent: apikey={SUPABASE_KEY[:20]}...")
     except Exception as exc:
         print(f"⚠️ Error saving workflow: {exc}")
 
