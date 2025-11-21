@@ -588,7 +588,7 @@ async def save_workflow_analysis(
         "scoring_method": scoring_method,
         "dc_demand_mw": dc_demand_mw,
         "user_ideal_mw": user_ideal_mw,
-        "top_5_projects": list(top_5_projects)[:5],
+        "top_5_projects": list(top_5_projects)[:10],
     }
 
     headers = {
@@ -1736,7 +1736,7 @@ async def get_enhanced_geojson(
                 scoring_method=active_scoring_method,
                 dc_demand_mw=dc_demand_mw,
                 user_ideal_mw=user_ideal_mw,
-                top_5_projects=features[:5],
+                top_5_projects=top_projects[:10],
             )
         )
 
