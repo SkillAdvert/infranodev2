@@ -52,6 +52,16 @@ from backend.proximity import (
     SpatialGrid,
     calculate_proximity_scores,
 )
+from backend.portfolio import (
+    RiskProfile,
+    calculate_multi_project_portfolio_score,
+    calculate_optimal_allocation,
+    analyze_portfolio_correlations,
+    calculate_risk_adjusted_returns,
+    calculate_efficient_frontier,
+    estimate_project_returns,
+    build_correlation_matrix,
+)
 
 print("Booting model...")
 _boot_start_time = time.time()
@@ -2517,6 +2527,318 @@ async def get_tec_connections(
     except Exception as exc:
         print(f"❌ TEC endpoint error: {exc}")
         raise HTTPException(500, f"Failed to fetch TEC connections: {exc}")
+
+
+# ============================================================================
+# PORTFOLIO OPTIMIZATION ENDPOINTS
+# ============================================================================
+
+
+class PortfolioAnalysisRequest(BaseModel):
+    """Request model for portfolio analysis."""
+    project_ids: Optional[List[str]] = None
+    projects: Optional[List[Dict[str, Any]]] = None
+    weights: Optional[Dict[str, float]] = None
+
+
+class PortfolioOptimizationRequest(BaseModel):
+    """Request model for portfolio optimization."""
+    project_ids: Optional[List[str]] = None
+    projects: Optional[List[Dict[str, Any]]] = None
+    total_investment_mw: Optional[float] = None
+    risk_profile: str = "moderate"
+    max_single_project_pct: float = 40.0
+    min_projects: int = 3
+
+
+class EfficientFrontierRequest(BaseModel):
+    """Request model for efficient frontier calculation."""
+    project_ids: Optional[List[str]] = None
+    projects: Optional[List[Dict[str, Any]]] = None
+    num_points: int = 20
+    max_weight: float = 0.4
+
+
+async def _get_projects_for_portfolio(
+    project_ids: Optional[List[str]] = None,
+    projects: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """Helper to get projects either from IDs or direct data."""
+    if projects:
+        return projects
+
+    if project_ids:
+        # Fetch projects from database
+        id_list = ",".join(f'"{pid}"' for pid in project_ids)
+        query = f"renewable_projects?ref_id=in.({id_list})"
+        rows = await query_supabase(query, limit=len(project_ids))
+        if rows:
+            return rows if isinstance(rows, list) else [rows]
+
+    # Default: fetch top projects
+    query = "renewable_projects?select=*&capacity_mw=gte.5&limit=50"
+    rows = await query_supabase(query, limit=50)
+    return rows if rows and isinstance(rows, list) else []
+
+
+@app.post("/api/portfolio/analyze")
+async def analyze_portfolio(request: PortfolioAnalysisRequest):
+    """
+    Analyze a portfolio of renewable energy projects.
+
+    Returns comprehensive portfolio metrics including:
+    - Portfolio score (composite of multiple factors)
+    - Risk-adjusted returns (Sharpe, Sortino, Treynor)
+    - Diversification metrics
+    - Geographic and technology breakdown
+    - Optimal allocations
+    """
+    try:
+        projects = await _get_projects_for_portfolio(
+            request.project_ids, request.projects
+        )
+
+        if not projects:
+            raise HTTPException(400, "No projects found for portfolio analysis")
+
+        result = calculate_multi_project_portfolio_score(
+            projects,
+            weights=request.weights,
+        )
+
+        return {
+            "success": True,
+            "portfolio_analysis": result,
+            "project_count": len(projects),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"❌ Portfolio analysis error: {exc}")
+        raise HTTPException(500, f"Portfolio analysis failed: {exc}")
+
+
+@app.post("/api/portfolio/optimize")
+async def optimize_portfolio(request: PortfolioOptimizationRequest):
+    """
+    Calculate optimal capacity allocation using Markowitz mean-variance optimization.
+
+    Supports different risk profiles:
+    - conservative: Lower volatility, moderate returns
+    - moderate: Balanced risk/return
+    - aggressive: Higher potential returns, higher volatility
+    """
+    try:
+        projects = await _get_projects_for_portfolio(
+            request.project_ids, request.projects
+        )
+
+        if not projects:
+            raise HTTPException(400, "No projects found for optimization")
+
+        # Map risk profile string to enum
+        risk_map = {
+            "conservative": RiskProfile.CONSERVATIVE,
+            "moderate": RiskProfile.MODERATE,
+            "aggressive": RiskProfile.AGGRESSIVE,
+        }
+        risk_profile = risk_map.get(
+            request.risk_profile.lower(), RiskProfile.MODERATE
+        )
+
+        result = calculate_optimal_allocation(
+            projects,
+            total_investment_mw=request.total_investment_mw,
+            risk_profile=risk_profile,
+            max_single_project_pct=request.max_single_project_pct,
+            min_projects=request.min_projects,
+        )
+
+        return {
+            "success": True,
+            "optimization_result": result,
+            "project_count": len(projects),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"❌ Portfolio optimization error: {exc}")
+        raise HTTPException(500, f"Portfolio optimization failed: {exc}")
+
+
+@app.post("/api/portfolio/correlations")
+async def get_portfolio_correlations(request: PortfolioAnalysisRequest):
+    """
+    Analyze correlations between projects in the portfolio.
+
+    Returns:
+    - Pairwise correlations (technology and geographic components)
+    - Best diversifying pairs (lowest correlation)
+    - Highest correlated pairs (potential concentration risk)
+    """
+    try:
+        projects = await _get_projects_for_portfolio(
+            request.project_ids, request.projects
+        )
+
+        if len(projects) < 2:
+            raise HTTPException(
+                400, "Need at least 2 projects for correlation analysis"
+            )
+
+        result = analyze_portfolio_correlations(projects)
+
+        return {
+            "success": True,
+            "correlation_analysis": result,
+            "project_count": len(projects),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"❌ Correlation analysis error: {exc}")
+        raise HTTPException(500, f"Correlation analysis failed: {exc}")
+
+
+@app.post("/api/portfolio/risk-adjusted-returns")
+async def get_risk_adjusted_returns(
+    request: PortfolioAnalysisRequest,
+    benchmark_return: float = Query(8.0, description="Benchmark annual return %"),
+    benchmark_volatility: float = Query(15.0, description="Benchmark volatility %"),
+    risk_free_rate: float = Query(4.0, description="Risk-free rate %"),
+):
+    """
+    Calculate risk-adjusted return metrics for the portfolio.
+
+    Returns:
+    - Sharpe ratio (excess return per unit of total risk)
+    - Sortino ratio (excess return per unit of downside risk)
+    - Treynor ratio (excess return per unit of systematic risk)
+    - Information ratio (active return vs tracking error)
+    - Value at Risk (VaR) and Conditional VaR
+    """
+    try:
+        projects = await _get_projects_for_portfolio(
+            request.project_ids, request.projects
+        )
+
+        if not projects:
+            raise HTTPException(400, "No projects found for analysis")
+
+        result = calculate_risk_adjusted_returns(
+            projects,
+            weights=request.weights,
+            benchmark_return=benchmark_return,
+            benchmark_volatility=benchmark_volatility,
+            risk_free_rate=risk_free_rate,
+        )
+
+        return {
+            "success": True,
+            "risk_adjusted_analysis": result,
+            "project_count": len(projects),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"❌ Risk-adjusted returns error: {exc}")
+        raise HTTPException(500, f"Risk-adjusted returns calculation failed: {exc}")
+
+
+@app.post("/api/portfolio/efficient-frontier")
+async def get_efficient_frontier(request: EfficientFrontierRequest):
+    """
+    Calculate the efficient frontier for the portfolio.
+
+    Returns a series of optimal portfolios ranging from minimum variance
+    to maximum return, allowing visualization of the risk-return trade-off.
+    """
+    try:
+        projects = await _get_projects_for_portfolio(
+            request.project_ids, request.projects
+        )
+
+        if not projects:
+            raise HTTPException(400, "No projects found for frontier calculation")
+
+        # Convert projects to returns
+        project_returns = [estimate_project_returns(p) for p in projects]
+        corr_matrix = build_correlation_matrix(project_returns)
+
+        frontier = calculate_efficient_frontier(
+            project_returns,
+            corr_matrix,
+            num_points=request.num_points,
+            max_weight=request.max_weight,
+        )
+
+        # Convert to JSON-serializable format
+        frontier_points = []
+        for point in frontier:
+            frontier_points.append({
+                "expected_return": round(point.expected_return, 2),
+                "volatility": round(point.volatility, 2),
+                "sharpe_ratio": round(point.sharpe_ratio, 3),
+                "weights": {k: round(v, 4) for k, v in point.weights.items()},
+                "allocation_count": len([w for w in point.weights.values() if w > 0.01]),
+            })
+
+        return {
+            "success": True,
+            "efficient_frontier": frontier_points,
+            "project_count": len(projects),
+            "frontier_points": len(frontier_points),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"❌ Efficient frontier error: {exc}")
+        raise HTTPException(500, f"Efficient frontier calculation failed: {exc}")
+
+
+@app.get("/api/portfolio/geographic-diversification")
+async def get_geographic_diversification(
+    project_ids: Optional[str] = Query(None, description="Comma-separated project IDs"),
+    limit: int = Query(50, ge=1, le=200),
+):
+    """
+    Analyze geographic diversification of projects.
+
+    Returns regional breakdown and diversification scores for the UK regions.
+    """
+    try:
+        if project_ids:
+            ids = [pid.strip() for pid in project_ids.split(",")]
+            projects = await _get_projects_for_portfolio(project_ids=ids)
+        else:
+            query = "renewable_projects?select=*&capacity_mw=gte.5"
+            rows = await query_supabase(query, limit=limit)
+            projects = rows if rows and isinstance(rows, list) else []
+
+        if not projects:
+            raise HTTPException(400, "No projects found")
+
+        result = calculate_multi_project_portfolio_score(projects)
+
+        return {
+            "success": True,
+            "geographic_score": result["metrics"]["geographic_score"],
+            "regional_breakdown": result["metrics"]["regional_breakdown"],
+            "technology_score": result["metrics"]["technology_mix_score"],
+            "technology_breakdown": result["metrics"]["technology_breakdown"],
+            "project_count": len(projects),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        print(f"❌ Geographic diversification error: {exc}")
+        raise HTTPException(500, f"Geographic diversification analysis failed: {exc}")
 
 
 if __name__ == "__main__":
