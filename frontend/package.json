@@ -1,0 +1,38 @@
+{
+  "name": "infranode-cloud-flow-tests",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:watch": "vitest --watch",
+    "test:coverage": "vitest run --coverage",
+    "test:ui": "vitest --ui",
+    "test:debug": "vitest --inspect-brk --pool threads --poolOptions.threads.singleThread"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "@tanstack/react-query": "^5.17.0",
+    "zustand": "^4.4.7"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^9.3.4",
+    "@testing-library/jest-dom": "^6.2.0",
+    "@testing-library/react": "^14.1.2",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/node": "^20.11.0",
+    "@types/react": "^18.2.48",
+    "@types/react-dom": "^18.2.18",
+    "@vitejs/plugin-react": "^4.2.1",
+    "@vitest/coverage-v8": "^1.2.0",
+    "@vitest/ui": "^1.2.0",
+    "happy-dom": "^13.3.1",
+    "jsdom": "^24.0.0",
+    "msw": "^2.1.4",
+    "typescript": "^5.3.3",
+    "vite": "^5.0.12",
+    "vitest": "^1.2.0"
+  }
+}
