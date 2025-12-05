@@ -1199,6 +1199,18 @@ async def get_geojson(
 async def score_user_sites(
     sites: List[UserSite],
     persona: Optional[PersonaType] = Query(None, description="Data center persona for custom scoring"),
+    user_max_fiber_km: Optional[float] = Query(
+        None,
+        description="User's maximum acceptable fiber distance (km) for latency scoring curve",
+    ),
+    user_max_ixp_km: Optional[float] = Query(
+        None,
+        description="User's maximum acceptable IXP distance (km) for latency scoring curve",
+    ),
+    user_max_water_km: Optional[float] = Query(
+        None,
+        description="User's maximum acceptable water distance (km) for cooling scoring curve",
+    ),
 ) -> Dict[str, Any]:
     if not sites:
         raise HTTPException(400, "No sites provided")
@@ -1249,7 +1261,17 @@ async def score_user_sites(
             }
         )
         if persona:
-            rating_result = calculate_persona_weighted_score(site_data, prox_scores, persona, "demand", None, None)
+            rating_result = calculate_persona_weighted_score(
+                site_data,
+                prox_scores,
+                persona,
+                "demand",
+                None,
+                None,
+                user_max_fiber_km,
+                user_max_ixp_km,
+                user_max_water_km,
+            )
         else:
             rating_result = calculate_enhanced_investment_rating(site_data, prox_scores)
 
@@ -1324,6 +1346,18 @@ async def get_enhanced_geojson(
     user_ideal_mw: Optional[float] = Query(  # NEW PARAMETER
         None,
         description="User's preferred capacity in MW (overrides persona default, sets Gaussian peak)",
+    ),
+    user_max_fiber_km: Optional[float] = Query(
+        None,
+        description="User's maximum acceptable fiber distance (km) for latency scoring curve",
+    ),
+    user_max_ixp_km: Optional[float] = Query(
+        None,
+        description="User's maximum acceptable IXP distance (km) for latency scoring curve",
+    ),
+    user_max_water_km: Optional[float] = Query(
+        None,
+        description="User's maximum acceptable water distance (km) for cooling scoring curve",
     ),
 ) -> Dict[str, Any]:
     user_id, user_email = extract_user_from_jwt(request.headers.get("authorization"))
@@ -1478,7 +1512,10 @@ async def get_enhanced_geojson(
                 proximity_scores,
                 persona_for_components,
                 user_max_price_mwh=user_max_price_mwh,
-                user_ideal_mw=user_ideal_mw,  
+                user_ideal_mw=user_ideal_mw,
+                user_max_fiber_km=user_max_fiber_km,
+                user_max_ixp_km=user_max_ixp_km,
+                user_max_water_km=user_max_water_km,
             )
             topsis_component_scores.append(component_scores)
 
@@ -1504,6 +1541,9 @@ async def get_enhanced_geojson(
                         persona_for_components,
                         user_max_price_mwh=user_max_price_mwh,
                         user_ideal_mw=user_ideal_mw,
+                        user_max_fiber_km=user_max_fiber_km,
+                        user_max_ixp_km=user_max_ixp_km,
+                        user_max_water_km=user_max_water_km,
                     )
                 )
                 topsis_info = topsis_results[index] if index < len(topsis_results) else None
@@ -1516,7 +1556,15 @@ async def get_enhanced_geojson(
                         )
                     elif persona:
                         rating_result = calculate_persona_weighted_score(
-                            project, proximity_scores, persona, "demand", user_max_price_mwh, user_ideal_mw
+                            project,
+                            proximity_scores,
+                            persona,
+                            "demand",
+                            user_max_price_mwh,
+                            user_ideal_mw,
+                            user_max_fiber_km,
+                            user_max_ixp_km,
+                            user_max_water_km,
                         )
                     else:
                         rating_result = calculate_enhanced_investment_rating(project, proximity_scores)
@@ -1569,6 +1617,9 @@ async def get_enhanced_geojson(
                         "demand",
                         user_max_price_mwh,
                         user_ideal_mw,
+                        user_max_fiber_km,
+                        user_max_ixp_km,
+                        user_max_water_km,
                     )
                 else:
                     rating_result = calculate_enhanced_investment_rating(project, proximity_scores)

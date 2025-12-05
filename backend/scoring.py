@@ -314,28 +314,50 @@ def calculate_grid_infrastructure_score(proximity_scores: Dict[str, float]) -> f
     return max(0.0, min(100.0, float(score)))
 
 
-def calculate_digital_infrastructure_score(proximity_scores: Dict[str, float]) -> float:
+def calculate_digital_infrastructure_score(
+    proximity_scores: Dict[str, float],
+    user_max_fiber_km: Optional[float] = None,
+    user_max_ixp_km: Optional[float] = None,
+) -> float:
     distances = proximity_scores.get("nearest_distances", {})
     fiber_distance = distances.get("fiber_km")
     ixp_distance = distances.get("ixp_km")
 
+    fiber_half_distance = (
+        user_max_fiber_km * 0.5
+        if user_max_fiber_km is not None
+        else INFRASTRUCTURE_HALF_DISTANCE_KM["fiber"]
+    )
+    ixp_half_distance = (
+        user_max_ixp_km * 0.5
+        if user_max_ixp_km is not None
+        else INFRASTRUCTURE_HALF_DISTANCE_KM["ixp"]
+    )
+
     fiber_raw = 0.0
     if fiber_distance is not None:
-        fiber_raw = math.exp(-fiber_distance / INFRASTRUCTURE_HALF_DISTANCE_KM["fiber"])
+        fiber_raw = math.exp(-fiber_distance / fiber_half_distance)
     ixp_raw = 0.0
     if ixp_distance is not None:
-        ixp_raw = math.exp(-ixp_distance / INFRASTRUCTURE_HALF_DISTANCE_KM["ixp"])
+        ixp_raw = math.exp(-ixp_distance / ixp_half_distance)
 
     score = 50.0 * (fiber_raw + ixp_raw)
     return max(0.0, min(100.0, float(score)))
 
 
-def calculate_water_resources_score(proximity_scores: Dict[str, float]) -> float:
+def calculate_water_resources_score(
+    proximity_scores: Dict[str, float], user_max_water_km: Optional[float] = None
+) -> float:
     distances = proximity_scores.get("nearest_distances", {})
     water_distance = distances.get("water_km")
+    water_half_distance = (
+        user_max_water_km * 0.5
+        if user_max_water_km is not None
+        else INFRASTRUCTURE_HALF_DISTANCE_KM["water"]
+    )
     water_raw = 0.0
     if water_distance is not None:
-        water_raw = math.exp(-water_distance / INFRASTRUCTURE_HALF_DISTANCE_KM["water"])
+        water_raw = math.exp(-water_distance / water_half_distance)
     score = 100.0 * water_raw
     return max(0.0, min(100.0, float(score)))
 
@@ -562,6 +584,9 @@ def _build_shared_persona_component_scores(
     proximity_scores: Dict[str, float],
     perspective: str = "demand",
     user_max_price_mwh: Optional[float] = None,
+    user_max_fiber_km: Optional[float] = None,
+    user_max_ixp_km: Optional[float] = None,
+    user_max_water_km: Optional[float] = None,
 ) -> Dict[str, float]:
     connection_speed_score = calculate_connection_speed_score(project, proximity_scores)
     resilience_score = calculate_resilience_score(project, proximity_scores)
@@ -569,8 +594,10 @@ def _build_shared_persona_component_scores(
         project.get("development_status_short", ""),
         perspective,
     )
-    latency_score = calculate_digital_infrastructure_score(proximity_scores)
-    cooling_score = calculate_water_resources_score(proximity_scores)
+    latency_score = calculate_digital_infrastructure_score(
+        proximity_scores, user_max_fiber_km, user_max_ixp_km
+    )
+    cooling_score = calculate_water_resources_score(proximity_scores, user_max_water_km)
     price_sensitivity_score = calculate_price_sensitivity_score(
         project,
         proximity_scores,
@@ -594,13 +621,22 @@ def build_persona_component_scores(
     perspective: str = "demand",
     user_max_price_mwh: Optional[float] = None,
     user_ideal_mw: Optional[float] = None,
+    user_max_fiber_km: Optional[float] = None,
+    user_max_ixp_km: Optional[float] = None,
+    user_max_water_km: Optional[float] = None,
     shared_component_scores: Optional[Dict[str, float]] = None,
 ) -> Dict[str, float]:
     base_scores = (
         dict(shared_component_scores)
         if shared_component_scores is not None
         else _build_shared_persona_component_scores(
-            project, proximity_scores, perspective, user_max_price_mwh
+            project,
+            proximity_scores,
+            perspective,
+            user_max_price_mwh,
+            user_max_fiber_km,
+            user_max_ixp_km,
+            user_max_water_km,
         )
     )
 
@@ -680,6 +716,9 @@ def calculate_persona_weighted_score(
     perspective: str = "demand",
     user_max_price_mwh: Optional[float] = None,
     user_ideal_mw: Optional[float] = None,
+    user_max_fiber_km: Optional[float] = None,
+    user_max_ixp_km: Optional[float] = None,
+    user_max_water_km: Optional[float] = None,
     shared_component_scores: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     baseline_weights = PERSONA_WEIGHTS[persona]
@@ -691,6 +730,9 @@ def calculate_persona_weighted_score(
         perspective,
         user_max_price_mwh,
         user_ideal_mw,
+        user_max_fiber_km,
+        user_max_ixp_km,
+        user_max_water_km,
         shared_component_scores,
     )
 
