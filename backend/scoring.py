@@ -166,9 +166,9 @@ PERSONA_CAPACITY_PARAMS: Dict[str, Dict[str, float]] = {
 
 INFRASTRUCTURE_HALF_DISTANCE_KM: Dict[str, float] = {
     "substation": 35.0,
-    "transmission": 50.0,
-    "fiber": 40.0,
-    "ixp": 70.0,
+    "transmission": 40.0,
+    "fiber": 20.0,
+    "ixp": 25.0,
     "water": 15.0,
 }
 
@@ -245,24 +245,24 @@ def calculate_development_stage_score(status: str, perspective: str = "demand") 
     status_str = str(status).lower().strip()
 
     status_scores = {
-        "decommissioned": 0,
+        "decommissioned": 25,
         "abandoned": 5,
-        "appeal withdrawn": 10,
+        "appeal withdrawn": 15,
         "appeal refused": 15,
         "under construction": 20,
         "appeal lodged": 25,
         "application refused": 30,
         "application withdrawn": 35,
         "awaiting construction": 40,
-        "no application made": 45,
-        "secretary of state granted": 80,
+        "no application made": 50,
+        "secretary of state granted": 60,
         "planning expired": 70,
         "no application required": 100,
-        "application submitted": 100,
+        "application submitted": 80,
         "revised": 90,
-        "consented": 70,
-        "granted": 70,
-        "in planning": 55,
+        "consented": 75,
+        "granted": 80,
+        "in planning": 85,
         "operational": 10,
     }
 
